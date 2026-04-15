@@ -91,6 +91,14 @@ Trigger phrases like *"make me an ASCII art piece with a flow field"* or *"glyph
 
 ---
 
+## Inspiration
+
+The idea of building a glyph-grid renderer as a reusable agent skill came from exploring [Hermes Agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com). Their creative skills catalog — particularly the p5.js generative art skill and the [agentskills.io](https://agentskills.io) open standard — showed that packaging creative techniques as portable, progressive-disclosure skill files is a genuinely useful pattern. This project adapts that pattern for Claude Code.
+
+The rendering technique itself is much older — see [Aesthetic lineage](#aesthetic-lineage) below.
+
+---
+
 ## Aesthetic lineage
 
 This technique is decades old. Crediting the tradition:

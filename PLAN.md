@@ -2,6 +2,10 @@
 
 > Single-file p5.js renderer that produces character-grid ASCII overlays on top of pixel-rendered geometric scenes. Two artifacts ship together: this **renderer repo** (the proof + template source) and a reusable **Claude Code skill** at `~/.claude/skills/glyph-grid/` that codifies the technique.
 
+## Context
+
+The skill-based approach is inspired by [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent) and the [agentskills.io](https://agentskills.io) open standard.
+
 ## Technique (the one paragraph that matters)
 
 Two-layer composite, **not** a single-pass ASCII converter. A real p5.js scene draws into an offscreen `p5.Graphics` buffer (full resolution, normal geometry — lines, parametric curves, noise bands). A second pass divides that buffer into an `N×M` grid, samples each cell's brightness (and optionally dominant color or Sobel edge magnitude), picks a glyph from a density ramp like `" .·:-=+*#%@"`, and renders it on the visible canvas with the source color preserved. Animation = re-render the source per frame, re-sample the grid. Export = capture frames to PNGs, stitch with ffmpeg.
