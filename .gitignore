@@ -1,0 +1,20 @@
+# Recorded frames + stitched output
+frames/
+*.gif
+out.*
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor junk
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs / scratch
+*.log
+scratch/

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glyph-Grid — scaffold</title>
+  <style>
+    /* Phase 0 scaffold. No rendering logic yet — see PLAN.md.
+       Background is intentionally black so Phase 1's dark-background
+       assumption is already in place when the canvas mounts. */
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      color: #888;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      height: 100%;
+    }
+    main {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      text-align: center;
+    }
+    p { opacity: 0.6; }
+    code { color: #aaa; }
+  </style>
+</head>
+<body>
+  <main>
+    <div>
+      <p>glyph-grid &mdash; phase 0 scaffold</p>
+      <p>see <code>PLAN.md</code></p>
+    </div>
+  </main>
+  <!--
+    Phase 1 will:
+      - load p5.js from CDN here
+      - mount a <canvas>
+      - declare CONFIG with cols/rows/font/palette/scene + inline justifications
+      - implement the offscreen-buffer + glyph-grid sampling pass
+      - render one static caduceusHelix frame
+    Nothing else. No animation, no record mode, no extra scenes — those are 2a / 2b / 3.
+  -->
+</body>
+</html>
