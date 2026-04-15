@@ -633,10 +633,18 @@
   // =================================================================
   // Recording finalization — generate ZIP, trigger download, halt.
   // Called once recState.frameIdx === recState.total.
+  // If recState.onFinish is set (test hook), it gets the blob instead
+  // of the normal download flow.
   // =================================================================
   function finishRecording() {
     statusEl().textContent = `RECORDING DONE — building ZIP…`;
     recState.zip.generateAsync({ type: 'blob' }).then((blob) => {
+      if (typeof recState.onFinish === 'function') {
+        recState.onFinish(blob);
+        statusEl().textContent =
+          `RECORDED ${recState.total} frames → handled by test hook`;
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -650,6 +658,26 @@
         `RECORDED ${recState.total} frames → ZIP downloaded. Unzip + run export-gif.sh`;
     });
   }
-  </script>
+
+  // =================================================================
+  // Test hooks for the dev harness in scratch/serve.js.
+  // No effect unless invoked from devtools or an automated test.
+  // Production users can ignore. Removable without affecting behavior.
+  // =================================================================
+  window.__glyphGridTest = {
+    beginRecord(total, onFinishOverride) {
+      recState = {
+        zip: new JSZip(),
+        frameIdx: 0,
+        total: total || Math.round(CONFIG.animation.duration * CONFIG.animation.fps),
+        done: false,
+        onFinish: onFinishOverride,
+      };
+    },
+    getConfig: () => CONFIG,
+    setConfig: (overrides) => { for (const k in overrides) CONFIG[k] = overrides[k]; },
+    getRecState: () => recState,
+  };
+</script>
 </body>
 </html>
