@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "glyph-grid",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scratch/serve.js"],
+      "port": 8765
+    }
+  ]
+}

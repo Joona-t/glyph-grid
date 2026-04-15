@@ -3,44 +3,653 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Glyph-Grid — scaffold</title>
+  <title>glyph-grid</title>
   <style>
-    /* Phase 0 scaffold. No rendering logic yet — see PLAN.md.
-       Background is intentionally black so Phase 1's dark-background
-       assumption is already in place when the canvas mounts. */
+    /* Black page, centered canvas. The visible canvas background is set
+       per-frame from the active palette — this CSS is just the page chrome. */
     html, body {
-      margin: 0;
-      padding: 0;
+      margin: 0; padding: 0;
       background: #000;
       color: #888;
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      height: 100%;
+      min-height: 100vh;
     }
-    main {
+    body {
       display: grid;
       place-items: center;
-      height: 100%;
-      text-align: center;
+      padding: 16px;
+      box-sizing: border-box;
     }
-    p { opacity: 0.6; }
-    code { color: #aaa; }
+    canvas { display: block; }
+    #status {
+      position: fixed;
+      bottom: 10px; left: 12px;
+      font-size: 11px;
+      opacity: 0.55;
+      pointer-events: none;
+      white-space: nowrap;
+    }
   </style>
 </head>
 <body>
-  <main>
-    <div>
-      <p>glyph-grid &mdash; phase 0 scaffold</p>
-      <p>see <code>PLAN.md</code></p>
-    </div>
-  </main>
-  <!--
-    Phase 1 will:
-      - load p5.js from CDN here
-      - mount a <canvas>
-      - declare CONFIG with cols/rows/font/palette/scene + inline justifications
-      - implement the offscreen-buffer + glyph-grid sampling pass
-      - render one static caduceusHelix frame
-    Nothing else. No animation, no record mode, no extra scenes — those are 2a / 2b / 3.
-  -->
+  <div id="status"></div>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.2/lib/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script>
+  /* =================================================================
+     glyph-grid — single-file p5.js renderer.
+     See PLAN.md and README.md for the technique and architecture.
+
+     Two-layer composite:
+       1. A scene function draws geometry into an offscreen p5.Graphics
+          buffer (the SOURCE layer) — full-resolution, normal draw calls.
+       2. A glyph-grid sampling pass walks an N×M grid over that buffer,
+          samples each cell's brightness/color, picks a character from
+          a density ramp, and renders it on the visible canvas — preserving
+          the source color so cyan stays cyan and pink stays pink.
+
+     Animation = re-run the scene with advanced t, re-sample the grid.
+     Export    = capture frames as PNGs, ZIP, ffmpeg-stitch.
+     ================================================================= */
+
+  // -----------------------------------------------------------------
+  // CONFIG — every knob, every default justified.
+  // Edit any field, save, reload. There is no other source of truth:
+  // no localStorage, no URL params, no UI controls. Carmack-style.
+  // -----------------------------------------------------------------
+  const CONFIG = {
+    canvas: {
+      // Visible canvas + offscreen source buffer share dimensions, so
+      // glyph cells map 1:1 to integer source-pixel rectangles. Decoupling
+      // is possible but adds an interpolation step we don't need.
+      // 800px is dense enough for detail without overflowing typical screens.
+      w: 800,
+      h: 800,
+    },
+
+    grid: {
+      // 100×100 = 10,000 cells, ≈8px per cell on an 800px canvas.
+      // Phase 1 perf budget: <30ms for the sampling pass at this density.
+      // Bump to 120 for very dense reference-style work — still well under
+      // budget on modern hardware with 'nearest' or 'average' sampling.
+      cols: 100,
+      rows: 100,
+    },
+
+    font: {
+      // Tight monospace renders well in narrow cells. p5 accepts any CSS
+      // font-family string. 'monospace' picks the OS default, which is
+      // what we want for a portable single-file build.
+      family: 'monospace',
+      // CSS pixels. Slightly smaller than cell width avoids glyph collisions
+      // at the edges of the dense ramp ('@', '%', '#').
+      size: 10,
+    },
+
+    // Density ramp — string key into RAMPS. Ordered dark→light.
+    ramp: 'classic',
+
+    // Brightness gamma applied before glyph-index lookup.
+    //   pow(brightness, gamma)
+    // Most scenes are thin geometry on a dark background — average sampling
+    // gives partial-fill cells (brightness 0.2–0.4) that linearly map to the
+    // first quarter of the ramp ('.', '·'). Gamma < 1 boosts mid-tones so
+    // those cells reach the visually meaningful part of the ramp.
+    //   1.0  → linear (good for solid-fill scenes)
+    //   0.5  → sqrt   (default, good for line-art scenes)
+    //   0.3  → aggressive boost (very thin geometry)
+    brightnessGamma: 0.5,
+
+    // Sampling strategy — string key.
+    //   'average'      → mean over all pixels in the cell (smoothest)
+    //   'nearest'      → just the cell-center pixel (fastest)
+    //   'edge-weighted'→ Sobel magnitude blended with brightness (boosts
+    //                    glyph density along edges, more "wireframe" look)
+    samplingStrategy: 'average',
+
+    // Color mode.
+    //   'preserve'   → use the sampled source color directly
+    //   'monochrome' → palette inks[0], brightness drives alpha
+    //   'duotone'    → lerp inks[0]→inks[1] by brightness
+    colorMode: 'preserve',
+
+    // Palette — string key into PALETTES.
+    // Default is intentionally palette-agnostic. The tool has no aesthetic;
+    // 'lovespark' is the brand preset, not the default.
+    palette: 'monochrome',
+
+    // Scene — string key into SCENES.
+    // Scenes implement the locked contract:
+    //   scene(g: p5.Graphics, t: number, config: CONFIG) => void
+    scene: 'caduceusHelix',
+
+    animation: {
+      // Target frame rate. Browser RAF caps this at display refresh.
+      fps: 30,
+      // Loop length in seconds. Scenes are expected to be periodic over
+      // [0, duration) so the loop is seamless.
+      duration: 4.0,
+      // If false, render one static frame at t=0 and stop. Useful for
+      // perf-checking and for shooting stills.
+      loop: true,
+    },
+
+    // Drives randomSeed() + noiseSeed() so reloads + recordings reproduce
+    // bit-identically. Change this and you get a different "instance" of
+    // the same scene.
+    seed: 1337,
+
+    // When true, the sketch enters record mode: deterministic state,
+    // captures duration*fps frames, packs them into one ZIP, triggers
+    // a single download, then halts. See README for the ffmpeg flow.
+    record: false,
+  };
+
+  // =================================================================
+  // RAMPS — ordered dark→light glyph density strings.
+  // =================================================================
+  const RAMPS = {
+    // The Paul Bourke classic — conservative, readable, widely used.
+    classic: ' .\u00b7:-=+*#%@',
+    // Wider gradient with more intermediate steps. Looks dense.
+    dense: ' .,:;i1tfLCG08@',
+    // Punchy minimalist. Good for high-contrast scenes.
+    sparse: ' .:+#@',
+    // Block elements only — pure shading, no glyph "noise".
+    'unicode-block': ' \u2591\u2592\u2593\u2588',
+  };
+
+  // =================================================================
+  // PALETTES — bg + ordered ink list.
+  // Color modes degrade gracefully if a palette has fewer inks than
+  // the mode wants (see inkColor + applyCellFill).
+  // =================================================================
+  const PALETTES = {
+    // Default. White on black. Tool is palette-agnostic.
+    monochrome: {
+      bg: '#000000',
+      inks: ['#FFFFFF'],
+    },
+    // Green CRT terminal.
+    phosphor: {
+      bg: '#001100',
+      inks: ['#33FF66', '#88FFAA'],
+    },
+    // Bauhaus primaries on cream — three distinct inks, high contrast.
+    bauhaus: {
+      bg: '#F2EBDA',
+      inks: ['#D62828', '#1D3557', '#F4C430'],
+    },
+    // The LoveSpark brand preset — pink + magenta + cyan on black.
+    lovespark: {
+      bg: '#000000',
+      inks: ['#FFB7C5', '#E91E8C', '#7FFFD4'],
+    },
+    // Amber CRT.
+    'mono-amber': {
+      bg: '#1A0D00',
+      inks: ['#FFB000'],
+    },
+  };
+
+  // =================================================================
+  // SCENE CONTRACT (locked at Phase 2a — do not change in 2b+):
+  //
+  //   scene(g: p5.Graphics, t: number, config: CONFIG) => void
+  //
+  //   g      — offscreen source buffer; the function draws into it,
+  //            mutates in place. It owns its own random/noise state
+  //            (seeded in setup), so call g.noise/g.random, NOT global.
+  //   t      — seconds since loop start; wraps at config.animation.duration
+  //            so loops are seamless. Scenes parameterize on t directly
+  //            (no per-frame state) so recordings are deterministic.
+  //   config — full CONFIG passed through; scenes read palette via
+  //            inkColor(config, i) and bgColor(config) so they work
+  //            across all palettes without modification.
+  //
+  //   Return value ignored. The glyph-grid pass calls g.loadPixels()
+  //   and reads g.pixels after the scene returns.
+  // =================================================================
+
+  function inkColor(config, i) {
+    const inks = PALETTES[config.palette].inks;
+    return inks[i % inks.length];
+  }
+
+  function bgColor(config) {
+    return PALETTES[config.palette].bg;
+  }
+
+  // -----------------------------------------------------------------
+  // SCENES
+  // -----------------------------------------------------------------
+  const SCENES = {
+
+    // caduceusHelix — vertical staff + two counter-rotating helices,
+    // plus a noise-textured wing-band near the top of the staff.
+    // This is the Phase 1 reference scene.
+    caduceusHelix(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noFill();
+
+      // Geometry parameters.
+      const cx = W / 2;                                  // staff x-position
+      const top = H * 0.08;                              // top margin
+      const bot = H * 0.92;                              // bottom margin
+      const amplitude = W * 0.18;                        // helix horizontal swing
+      const turns = 5.5;                                 // visual density of the spiral
+      const speed = (Math.PI * 2) / config.animation.duration; // 1 turn per loop
+      const samples = 320;                               // points per helix curve
+
+      // 1. Staff — single bright vertical line.
+      g.stroke(inkColor(config, 0));
+      g.strokeWeight(2.5);
+      g.line(cx, top, cx, bot);
+
+      // 2 + 3. Two helices in counter-phase, ink slots 1 and 2.
+      // Drawn as polylines (vertex/beginShape) — avoids p5.curveVertex's
+      // Catmull-Rom edge artifacts. With 320 samples the result is smooth.
+      for (let helix = 0; helix < 2; helix++) {
+        g.stroke(inkColor(config, 1 + helix));
+        g.strokeWeight(2);
+        const phase = helix * Math.PI;
+        g.beginShape();
+        for (let i = 0; i <= samples; i++) {
+          const u = i / samples;                         // 0..1 along the staff
+          const y = top + u * (bot - top);
+          const angle = u * turns * Math.PI * 2 + phase + t * speed;
+          const x = cx + Math.cos(angle) * amplitude;
+          g.vertex(x, y);
+        }
+        g.endShape();
+      }
+
+      // 4. Wing-band — short horizontal dashes inside a band, density
+      // and offset driven by Perlin noise. Animates because we sample
+      // noise(i, t) — the third axis is t. This produces the dithered
+      // "cloud" texture that the reference image has.
+      const bandTop = top + (bot - top) * 0.18;
+      const bandBot = top + (bot - top) * 0.32;
+      const bandLeft = cx - amplitude * 1.6;
+      const bandRight = cx + amplitude * 1.6;
+      const dashes = 180;
+      g.strokeWeight(1);
+      for (let i = 0; i < dashes; i++) {
+        const fx = bandLeft + (bandRight - bandLeft) * (i / dashes);
+        const fy = bandTop + (bandBot - bandTop) * g.noise(i * 0.13, t * 0.5);
+        const a = g.noise(i * 0.07, t * 0.3 + 100) * 255;
+        const c = g.color(inkColor(config, 0));
+        c.setAlpha(a);
+        g.stroke(c);
+        g.line(fx, fy, fx + 2.5, fy);
+      }
+    },
+
+    // flowField — Perlin noise vector field, streamlines integrated
+    // forward from deterministic seed positions. Pure parametric on t —
+    // no per-frame particle state (the contract forbids it).
+    flowField(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noFill();
+      g.strokeWeight(1.2);
+
+      const lines = 220;          // streamline count
+      const stepsPerLine = 60;    // integration steps per line
+      const stepSize = 6;         // pixels per step
+      const noiseScale = 0.0035;  // controls field "wavelength"
+      const tDrift = t * 0.15;    // time-driven evolution of the field
+
+      for (let i = 0; i < lines; i++) {
+        // Deterministic, jittered seed positions. Tuned so streamlines
+        // distribute evenly across the canvas without visible grid bias.
+        const sx = ((i * 73) % 13) / 13 * W * 0.07 + (i / lines) * W;
+        const sy = ((i * 31) % 11) / 11 * H * 0.07 + ((i * 17) % lines) / lines * H;
+        let x = sx % W;
+        let y = sy % H;
+
+        g.stroke(inkColor(config, i % 3));
+        g.beginShape();
+        for (let s = 0; s < stepsPerLine; s++) {
+          if (x < 0 || x > W || y < 0 || y > H) break;
+          g.vertex(x, y);
+          // Vector field angle from 3D Perlin. tDrift makes the field
+          // breathe with the loop. The *4 multiplier on the angle gives
+          // streamlines enough curl to be visually interesting without
+          // becoming chaotic.
+          const angle = g.noise(x * noiseScale, y * noiseScale, tDrift) * Math.PI * 4;
+          x += Math.cos(angle) * stepSize;
+          y += Math.sin(angle) * stepSize;
+        }
+        g.endShape();
+      }
+    },
+
+    // concentricRings — N rings centered on the canvas, each with a
+    // sinusoidal radial wobble. Wobble phase advances with t so the
+    // shapes pulse and rotate. One full rotation per loop.
+    concentricRings(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noFill();
+      g.strokeWeight(1.5);
+
+      const cx = W / 2, cy = H / 2;
+      const ringCount = 28;
+      const maxR = Math.min(W, H) * 0.46;
+      const segments = 220;       // polyline density per ring
+      const speed = (Math.PI * 2) / config.animation.duration; // 1 rotation per loop
+
+      for (let r = 0; r < ringCount; r++) {
+        const baseR = (r + 1) / ringCount * maxR;
+        const waveAmp = baseR * 0.06;             // radial wobble proportional to radius
+        const waveFreq = 4 + (r % 5);             // each ring a slightly different shape
+        const phase = t * speed + r * 0.21;       // radial offset per ring
+
+        g.stroke(inkColor(config, r % 3));
+        g.beginShape();
+        for (let s = 0; s <= segments; s++) {
+          const a = (s / segments) * Math.PI * 2;
+          const radius = baseR + Math.sin(a * waveFreq + phase) * waveAmp;
+          const x = cx + Math.cos(a) * radius;
+          const y = cy + Math.sin(a) * radius;
+          g.vertex(x, y);
+        }
+        g.endShape();
+      }
+    },
+  };
+
+  // =================================================================
+  // p5 sketch — global mode.
+  // =================================================================
+  let src;             // offscreen p5.Graphics (the source buffer)
+  let recState = null; // record-mode state, null in live mode
+  const statusEl = () => document.getElementById('status');
+
+  function setup() {
+    createCanvas(CONFIG.canvas.w, CONFIG.canvas.h);
+    pixelDensity(1); // disable hi-DPI scaling — sampling math stays integer
+    src = createGraphics(CONFIG.canvas.w, CONFIG.canvas.h);
+    src.pixelDensity(1);
+
+    // Seed both the visible context and the offscreen graphics so any
+    // random/noise call is reproducible.
+    randomSeed(CONFIG.seed);
+    noiseSeed(CONFIG.seed);
+    src.randomSeed(CONFIG.seed);
+    src.noiseSeed(CONFIG.seed);
+
+    textFont(CONFIG.font.family);
+    textSize(CONFIG.font.size);
+    textAlign(CENTER, CENTER);
+
+    frameRate(CONFIG.animation.fps);
+    background(bgColor(CONFIG));
+
+    if (CONFIG.record) {
+      recState = {
+        zip: new JSZip(),
+        frameIdx: 0,
+        total: Math.max(1, Math.round(CONFIG.animation.duration * CONFIG.animation.fps)),
+        done: false,
+      };
+    }
+  }
+
+  function draw() {
+    // Halt once recording is complete — leaves the final frame visible.
+    if (recState && recState.done) {
+      noLoop();
+      return;
+    }
+    // Static-frame mode: render once at t=0 then halt.
+    if (!CONFIG.animation.loop && !recState && frameCount > 1) {
+      noLoop();
+      return;
+    }
+
+    // Compute t.
+    //   record mode → exactly frameIdx/fps (deterministic)
+    //   live mode   → frameCount/fps mod duration (loops)
+    const t = recState
+      ? (recState.frameIdx / CONFIG.animation.fps)
+      : ((frameCount - 1) / CONFIG.animation.fps) % CONFIG.animation.duration;
+
+    // 1. Render the source layer.
+    SCENES[CONFIG.scene](src, t, CONFIG);
+
+    // 2. Glyph-grid sampling pass.
+    const t0 = performance.now();
+    src.loadPixels();
+    background(bgColor(CONFIG));
+    drawGlyphGrid(src);
+    const t1 = performance.now();
+
+    // Live status overlay (record mode shows its own progress).
+    if (!recState) {
+      statusEl().textContent =
+        `${CONFIG.scene} | ${CONFIG.palette} | ${CONFIG.samplingStrategy}/${CONFIG.colorMode} | ` +
+        `${CONFIG.grid.cols}×${CONFIG.grid.rows} | sample ${(t1 - t0).toFixed(1)}ms | ` +
+        `t=${t.toFixed(2)}s`;
+    }
+
+    // 3. Record-mode capture + advance.
+    if (recState) {
+      const name = `frame_${String(recState.frameIdx + 1).padStart(4, '0')}.png`;
+      // canvas.toDataURL returns 'data:image/png;base64,XXXX'.
+      // Strip the prefix and add as base64 to JSZip.
+      const dataUrl = drawingContext.canvas.toDataURL('image/png');
+      const base64 = dataUrl.split(',')[1];
+      recState.zip.file(name, base64, { base64: true });
+      recState.frameIdx++;
+      statusEl().textContent =
+        `RECORDING ${recState.frameIdx}/${recState.total} (${CONFIG.scene} @ ${CONFIG.palette})`;
+      if (recState.frameIdx >= recState.total) {
+        recState.done = true;
+        finishRecording();
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // Glyph-grid sampling pass.
+  // For each cell: sample the underlying source pixels by strategy →
+  // compute its signal as RGB distance from the palette background →
+  // pick a glyph from the ramp by curved signal → set fill color from
+  // palette + color mode → draw the glyph centered in the cell.
+  //
+  // Signal-from-bg (not raw brightness) is the right primitive: it
+  // works for black, light, and tinted backgrounds equally. For a black
+  // bg it degenerates to luminance; for a cream bg, dark lines correctly
+  // produce HIGH signal because they're far from cream.
+  // -----------------------------------------------------------------
+  // Maximum possible RGB Euclidean distance: sqrt(255² × 3) ≈ 441.67.
+  // Used to normalize signal into [0, 1].
+  const MAX_RGB_DIST = Math.sqrt(255 * 255 * 3);
+
+  function drawGlyphGrid(g) {
+    const cols = CONFIG.grid.cols;
+    const rows = CONFIG.grid.rows;
+    const cellW = g.width / cols;
+    const cellH = g.height / rows;
+    const cellPxW = Math.max(1, Math.floor(cellW));
+    const cellPxH = Math.max(1, Math.floor(cellH));
+    const ramp = RAMPS[CONFIG.ramp];
+    const rampLast = ramp.length - 1;
+    const palette = PALETTES[CONFIG.palette];
+    const pixels = g.pixels;
+    const srcW = g.width;
+    const srcH = g.height;
+    const stride = srcW * 4; // RGBA, row-major
+    const gamma = CONFIG.brightnessGamma;
+
+    // Decode bg hex once per frame so the inner loop can do plain math.
+    const bgC = color(palette.bg);
+    const bgR = red(bgC), bgG = green(bgC), bgB = blue(bgC);
+
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(CONFIG.font.size);
+    textFont(CONFIG.font.family);
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const x0 = Math.floor(col * cellW);
+        const y0 = Math.floor(row * cellH);
+        const cx = x0 + cellW / 2;
+        const cy = y0 + cellH / 2;
+
+        const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, srcH);
+
+        // Signal = how far this cell's color is from the palette bg.
+        const dr = sample.r - bgR;
+        const dg = sample.g - bgG;
+        const db = sample.b - bgB;
+        let signal = Math.sqrt(dr * dr + dg * dg + db * db) / MAX_RGB_DIST;
+        // Edge-weighted sampling adds a Sobel boost on top of raw signal.
+        if (sample.edgeMag !== undefined) {
+          signal = Math.min(1, signal * 0.4 + sample.edgeMag * 0.6);
+        }
+
+        // Skip cells whose color is essentially the background — both
+        // a perf win (no glyphs in empty regions) and a visual win (the
+        // page bg shows through cleanly).
+        if (signal < 0.02) continue;
+
+        // Gamma curve so thin-geometry signal lands in the meaningful
+        // part of the ramp instead of getting stuck on '·' and ':'.
+        const curved = Math.pow(signal, gamma);
+        const idx = Math.min(rampLast, Math.max(0, Math.floor(curved * rampLast + 0.0001)));
+        const ch = ramp.charAt(idx);
+        if (ch === ' ') continue;
+
+        applyCellFill(sample, palette, curved, bgR, bgG, bgB);
+        text(ch, cx, cy);
+      }
+    }
+  }
+
+  // Sample one cell's pixels under the configured strategy.
+  // Returns { r, g, b ∈ [0,255], edgeMag? ∈ [0,1] }.
+  // Signal-from-bg is computed in the caller (drawGlyphGrid) so all
+  // strategies can share the same bg-aware skip + ramp logic.
+  function sampleCell(pixels, stride, x0, y0, w, h, srcW, srcH) {
+    const strategy = CONFIG.samplingStrategy;
+
+    if (strategy === 'nearest') {
+      const cx = x0 + (w >> 1);
+      const cy = y0 + (h >> 1);
+      const i = cy * stride + cx * 4;
+      return { r: pixels[i], g: pixels[i + 1], b: pixels[i + 2] };
+    }
+
+    if (strategy === 'edge-weighted') {
+      // 3×3 Sobel using corners + edge midpoints + center as the kernel taps.
+      // Color comes from the cell center so edges still inherit local hue.
+      // edgeMag ∈ [0,1] is added to the cell's bg-distance signal upstream.
+      const cxp = x0 + (w >> 1);
+      const cyp = y0 + (h >> 1);
+      const xL = Math.max(0, x0);
+      const xR = Math.min(srcW - 1, x0 + w - 1);
+      const yT = Math.max(0, y0);
+      const yB = Math.min(srcH - 1, y0 + h - 1);
+      const lum = (px, py) => {
+        const i = py * stride + px * 4;
+        return (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+      };
+      const tl = lum(xL, yT), tr = lum(xR, yT);
+      const bl = lum(xL, yB), br = lum(xR, yB);
+      const tc = lum(cxp, yT), bc = lum(cxp, yB);
+      const lc = lum(xL, cyp), rc = lum(xR, cyp);
+      const gx = -tl - 2 * lc - bl + tr + 2 * rc + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      const mag = Math.min(255, Math.sqrt(gx * gx + gy * gy));
+      const i = cyp * stride + cxp * 4;
+      return { r: pixels[i], g: pixels[i + 1], b: pixels[i + 2], edgeMag: mag / 255 };
+    }
+
+    // strategy === 'average' (default)
+    let sumR = 0, sumG = 0, sumB = 0, count = 0;
+    const yEnd = Math.min(srcH, y0 + h);
+    const xEnd = Math.min(srcW, x0 + w);
+    for (let py = y0; py < yEnd; py++) {
+      const rowOff = py * stride;
+      for (let px = x0; px < xEnd; px++) {
+        const i = rowOff + px * 4;
+        sumR += pixels[i];
+        sumG += pixels[i + 1];
+        sumB += pixels[i + 2];
+        count++;
+      }
+    }
+    return { r: sumR / count, g: sumG / count, b: sumB / count };
+  }
+
+  // Apply fill() based on color mode + palette. Modes degrade gracefully
+  // on palettes with fewer inks than they'd ideally want.
+  //
+  // `curved` is the gamma-adjusted bg-aware signal (matches the glyph density).
+  // `bgR/bgG/bgB` are the palette bg components, used by 'preserve' to
+  // normalize the cell color as a delta from bg so dark-on-light palettes
+  // don't invert hue.
+  function applyCellFill(sample, palette, curved, bgR, bgG, bgB) {
+    const mode = CONFIG.colorMode;
+    if (mode === 'preserve') {
+      // Normalize the (cell - bg) delta to its max-magnitude channel and
+      // re-add to bg. This preserves the line's hue even when:
+      //   - the line is dim (average-sampled magenta on black → vivid magenta)
+      //   - the bg is light (dark red on cream stays red, doesn't flip hue)
+      //   - the bg is tinted (dark green CRT bg + bright green line stays green)
+      const dr = sample.r - bgR;
+      const dg = sample.g - bgG;
+      const db = sample.b - bgB;
+      const m = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db), 1);
+      const s = 255 / m;
+      const r = Math.max(0, Math.min(255, bgR + dr * s));
+      const g = Math.max(0, Math.min(255, bgG + dg * s));
+      const b = Math.max(0, Math.min(255, bgB + db * s));
+      fill(r, g, b);
+      return;
+    }
+    if (mode === 'monochrome') {
+      const c = color(palette.inks[0]);
+      // Curved signal drives alpha so the mid-tone boost is visible.
+      c.setAlpha(255 * Math.min(1, curved * 1.1));
+      fill(c);
+      return;
+    }
+    if (mode === 'duotone') {
+      const a = color(palette.inks[0]);
+      const b = color(palette.inks[Math.min(1, palette.inks.length - 1)]);
+      const lerped = lerpColor(a, b, Math.min(1, curved));
+      fill(lerped);
+      return;
+    }
+    fill(255);
+  }
+
+  // =================================================================
+  // Recording finalization — generate ZIP, trigger download, halt.
+  // Called once recState.frameIdx === recState.total.
+  // =================================================================
+  function finishRecording() {
+    statusEl().textContent = `RECORDING DONE — building ZIP…`;
+    recState.zip.generateAsync({ type: 'blob' }).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      a.download = `glyph-grid_${CONFIG.scene}_${CONFIG.palette}_${stamp}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      statusEl().textContent =
+        `RECORDED ${recState.total} frames → ZIP downloaded. Unzip + run export-gif.sh`;
+    });
+  }
+  </script>
 </body>
 </html>

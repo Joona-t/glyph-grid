@@ -18,3 +18,8 @@ desktop.ini
 # Logs / scratch
 *.log
 scratch/
+
+# Claude Code local-only state (keep launch.json which is portable)
+.claude/settings.local.json
+.claude/sessions/
+.claude/cache/
