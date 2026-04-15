@@ -74,11 +74,12 @@ There is no other source of truth: no localStorage, no URL params, no UI control
 
 ## Reusable Claude Code skill
 
-This renderer is also installed as a reusable Claude Code skill at `~/.claude/skills/glyph-grid/`:
+The canonical skill source lives in this repo under [`skill/`](./skill) and gets installed into `~/.claude/skills/glyph-grid/` via a symlink. Layout:
 
 ```
-~/.claude/skills/glyph-grid/
+skill/
 ├── SKILL.md                        # lean entry point, triggers on "ASCII art", "glyph grid", etc.
+├── install.sh                      # symlinks skill/ into ~/.claude/skills/glyph-grid
 ├── references/
 │   ├── technique.md                # the two-layer technique + scene contract
 │   └── scenes.md                   # four annotated scene patterns
@@ -89,7 +90,17 @@ This renderer is also installed as a reusable Claude Code skill at `~/.claude/sk
     └── sparky.png                  # LoveSpark mascot, used by sparkyPortrait scene
 ```
 
-Trigger phrases like *"make me an ASCII art piece with a flow field"* or *"glyph-based visualization in the style of @macbethAI"* will auto-load the skill in a fresh Claude Code session, scaffold a new sketch from `scripts/render.html`, and edit the `CONFIG` to match the request.
+**Install:**
+
+```bash
+git clone https://github.com/Joona-t/glyph-grid.git
+cd glyph-grid
+bash skill/install.sh              # symlinks skill/ → ~/.claude/skills/glyph-grid
+```
+
+Restart your Claude Code session. Trigger phrases like *"make me an ASCII art piece with a flow field"*, *"glyph-based visualization in the style of @macbethAI"*, or *"ASCII portrait of Sparky in the lovespark palette"* will auto-load the skill, scaffold a new sketch from `scripts/render.html`, and edit the `CONFIG` to match the request.
+
+> **Note on duplication:** `skill/scripts/render.html` is a verbatim copy of the root `index.html`, and `skill/assets/sparky.png` is a verbatim copy of `assets/sparky.png`. The root files are the "live preview" you open in a browser; the `skill/` copies are the install source. If you edit the renderer, update both (or re-run a sync — TODO).
 
 ---
 
