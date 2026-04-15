@@ -46,7 +46,7 @@ There is no other source of truth: no localStorage, no URL params, no UI control
 
 ## Scenes, palettes, ramps
 
-- **Scenes**: `caduceusHelix`, `flowField`, `concentricRings`. Adding a scene is a 10-line function — see `scripts/render.html` and the locked scene contract `scene(g, t, config) => void`.
+- **Scenes**: `caduceusHelix`, `flowField`, `concentricRings`, `sparkyPortrait` (LoveSpark brand mascot composited with animated sparkle/heart particles). Adding a scene is a 10-line function — see the locked scene contract `scene(g, t, config) => void`.
 - **Palettes**: `monochrome` (default — palette-agnostic white on black), `phosphor` (green CRT), `bauhaus` (red/blue/yellow on cream), `lovespark` (the LoveSpark suite's pink/magenta/cyan), `mono-amber` (amber CRT).
 - **Ramps**: `classic` (Paul Bourke's `' .·:-=+*#%@'`), `dense`, `sparse`, `unicode-block` (`' ░▒▓█'`).
 - **Sampling**: `average` (smoothest), `nearest` (fastest), `edge-weighted` (Sobel boost).
@@ -78,13 +78,15 @@ This renderer is also installed as a reusable Claude Code skill at `~/.claude/sk
 
 ```
 ~/.claude/skills/glyph-grid/
-├── SKILL.md                        # lean entry point, triggers on "ASCII art generator", etc.
+├── SKILL.md                        # lean entry point, triggers on "ASCII art", "glyph grid", etc.
 ├── references/
 │   ├── technique.md                # the two-layer technique + scene contract
-│   └── scenes.md                   # three annotated scene patterns
-└── scripts/
-    ├── render.html                 # verbatim copy of index.html, used as a template
-    └── export-gif.sh               # verbatim copy of export-gif.sh
+│   └── scenes.md                   # four annotated scene patterns
+├── scripts/
+│   ├── render.html                 # verbatim copy of index.html, used as a template
+│   └── export-gif.sh               # verbatim copy of export-gif.sh
+└── assets/
+    └── sparky.png                  # LoveSpark mascot, used by sparkyPortrait scene
 ```
 
 Trigger phrases like *"make me an ASCII art piece with a flow field"* or *"glyph-based visualization in the style of @macbethAI"* will auto-load the skill in a fresh Claude Code session, scaffold a new sketch from `scripts/render.html`, and edit the `CONFIG` to match the request.

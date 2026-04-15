@@ -114,14 +114,18 @@
     colorMode: 'preserve',
 
     // Palette — string key into PALETTES.
-    // Default is intentionally palette-agnostic. The tool has no aesthetic;
-    // 'lovespark' is the brand preset, not the default.
-    palette: 'monochrome',
+    // Default is 'lovespark' because the default scene is sparkyPortrait
+    // and Sparky is pink. For neutral exploration switch to 'monochrome'.
+    palette: 'lovespark',
 
     // Scene — string key into SCENES.
     // Scenes implement the locked contract:
     //   scene(g: p5.Graphics, t: number, config: CONFIG) => void
-    scene: 'caduceusHelix',
+    // 'sparkyPortrait' is the LoveSpark brand scene and is the default
+    // because this fork of the tool ships with Sparky as the mascot demo.
+    // Change to 'caduceusHelix', 'flowField', or 'concentricRings' for
+    // palette-agnostic exploration.
+    scene: 'sparkyPortrait',
 
     animation: {
       // Target frame rate. Browser RAF caps this at display refresh.
@@ -218,6 +222,24 @@
 
   function bgColor(config) {
     return PALETTES[config.palette].bg;
+  }
+
+  // -----------------------------------------------------------------
+  // ASSETS — preloaded before setup() so scenes can use them synchronously.
+  // p5.js auto-detects preload() and blocks setup() until it resolves.
+  // Scenes that don't need assets ignore this; sparkyPortrait uses sparkyImg.
+  // -----------------------------------------------------------------
+  let sparkyImg = null;
+
+  function preload() {
+    // loadImage is async but p5 preload holds setup() until it's done.
+    // If the asset is missing (e.g. opened from a weird path) the scene
+    // falls back to a procedural placeholder — see sparkyPortrait below.
+    sparkyImg = loadImage(
+      'assets/sparky.png',
+      () => { /* ok */ },
+      () => { sparkyImg = null; }
+    );
   }
 
   // -----------------------------------------------------------------
@@ -323,6 +345,115 @@
           y += Math.sin(angle) * stepSize;
         }
         g.endShape();
+      }
+    },
+
+    // sparkyPortrait — LoveSpark brand scene. Loads the Sparky mascot PNG
+    // (preloaded into sparkyImg) and composites it onto an animated field
+    // of sparkles and hearts. The glyph-grid pass samples the composed
+    // buffer, so Sparky's fur and the surrounding particles both render
+    // as colored ASCII. Pairs best with palette 'lovespark' + colorMode
+    // 'preserve' — the PNG's own pink/white/cyan hues are carried through
+    // intact rather than being forced into the palette's inks.
+    //
+    // If sparkyImg failed to load (offline open, path mismatch), the
+    // scene falls back to a procedural circle so the renderer still
+    // shows *something* instead of a blank frame.
+    sparkyPortrait(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+
+      const speed = (Math.PI * 2) / config.animation.duration;
+      const loopPhase = t * speed;
+
+      // --- Background: sparkle field -----------------------------------
+      // 60 deterministic sparkles drifting upward. Each one has a fixed
+      // seed-derived x, a y that wraps over the loop duration, and a
+      // twinkle envelope so glyphs blink rather than being static.
+      const sparkleCount = 60;
+      g.strokeCap(g.ROUND ?? 'round');
+      for (let i = 0; i < sparkleCount; i++) {
+        const seed = i * 97 + 13;
+        const baseX = ((seed * 53) % 1000) / 1000 * W;
+        const baseY = ((seed * 31) % 1000) / 1000 * H;
+        // Upward drift, wrapped into [0, H) so the field is seamless.
+        const drift = (baseY - (t / config.animation.duration) * H) % H;
+        const y = drift < 0 ? drift + H : drift;
+        // Twinkle: sine wave offset per-sparkle so they don't pulse in sync.
+        const twinkle = (Math.sin(loopPhase * 3 + i * 0.7) + 1) / 2;
+        const size = 3 + twinkle * 9;
+        // Cyan accent ink (slot 2 in lovespark = #7FFFD4).
+        const c = g.color(inkColor(config, 2));
+        c.setAlpha(60 + twinkle * 195);
+        g.stroke(c);
+        g.strokeWeight(1.4);
+        g.line(baseX - size / 2, y, baseX + size / 2, y);
+        g.line(baseX, y - size / 2, baseX, y + size / 2);
+      }
+
+      // --- Background: heart particles ---------------------------------
+      // 14 bigger magenta hearts drawn as paired half-circles + triangle,
+      // orbiting slowly so they aren't dead-static. Hearts render sparse
+      // enough that they read as bokeh behind Sparky rather than clutter.
+      const heartCount = 14;
+      g.noStroke();
+      for (let i = 0; i < heartCount; i++) {
+        const seed = i * 211 + 7;
+        const orbitR = (((seed * 17) % 1000) / 1000) * W * 0.42 + W * 0.08;
+        const orbitSpeed = 0.3 + ((seed % 7) / 7) * 0.6;
+        const orbitPhase = loopPhase * orbitSpeed + i * 0.9;
+        const cx = W / 2 + Math.cos(orbitPhase) * orbitR;
+        const cy = H / 2 + Math.sin(orbitPhase * 1.3) * orbitR * 0.55;
+        const r = 8 + ((seed * 11) % 12);
+        const c = g.color(inkColor(config, 1)); // magenta in lovespark
+        c.setAlpha(110);
+        g.fill(c);
+        // Two lobes + triangle = heart. Not a perfect heart but good
+        // enough once the glyph grid samples and quantizes it.
+        g.ellipse(cx - r * 0.5, cy - r * 0.25, r, r);
+        g.ellipse(cx + r * 0.5, cy - r * 0.25, r, r);
+        g.triangle(
+          cx - r, cy,
+          cx + r, cy,
+          cx, cy + r * 1.15
+        );
+      }
+
+      // --- Foreground: Sparky -----------------------------------------
+      // Gentle bob up/down on a sine (1 full cycle per loop) so the
+      // ASCII edges around him shift every frame. Scale is 70% of the
+      // shorter canvas axis so there's breathing room for the sparkles.
+      const bob = Math.sin(loopPhase) * H * 0.018;
+      const centerX = W / 2;
+      const centerY = H / 2 + bob;
+
+      if (sparkyImg && sparkyImg.width > 0) {
+        const target = Math.min(W, H) * 0.70;
+        const imgAspect = sparkyImg.width / sparkyImg.height;
+        let drawW, drawH;
+        if (imgAspect >= 1) {
+          drawW = target;
+          drawH = target / imgAspect;
+        } else {
+          drawH = target;
+          drawW = target * imgAspect;
+        }
+        g.imageMode(g.CENTER);
+        g.image(sparkyImg, centerX, centerY, drawW, drawH);
+        g.imageMode(g.CORNER); // reset, don't leak mode into other scenes
+      } else {
+        // Fallback placeholder: a pink circle with a cyan ring.
+        // Signals "asset missing" without crashing the render.
+        const r = Math.min(W, H) * 0.22;
+        const pink = g.color(inkColor(config, 0));
+        g.noStroke();
+        g.fill(pink);
+        g.ellipse(centerX, centerY, r * 2, r * 2);
+        const cyan = g.color(inkColor(config, 2));
+        g.noFill();
+        g.stroke(cyan);
+        g.strokeWeight(3);
+        g.ellipse(centerX, centerY, r * 2.3, r * 2.3);
       }
     },
 
