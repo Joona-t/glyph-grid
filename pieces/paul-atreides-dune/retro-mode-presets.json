@@ -1,0 +1,66 @@
+{
+  "_doc": "Retro-mode presets applied BEFORE user config merges (IM-8). User fields always win. Loader: glyph-retro.js resolveMode(baseConfig, modeName).",
+  "amiga-500": {
+    "description": "Amiga 500 OCS aesthetic: 32 colors, chunky pixels, soft scanlines, mild bloom.",
+    "glyphSet": "blockElements",
+    "selectionMode": "brightness",
+    "palette": ["#000000", "#222034", "#45283c", "#663931", "#8f563b", "#df7126", "#d9a066", "#eec39a", "#fbf236", "#99e550", "#6abe30", "#37946e", "#4b692f", "#524b24", "#323c39", "#3f3f74", "#306082", "#5b6ee1", "#639bff", "#5fcde4", "#cbdbfc", "#ffffff", "#9badb7", "#847e87", "#696a6a", "#595652", "#76428a", "#ac3232", "#d95763", "#d77bba", "#8f974a", "#8a6f30"],
+    "postprocess": {
+      "scanlines": { "enabled": true, "intensity": 0.18, "period": 2 },
+      "bloom": { "enabled": true, "threshold": 0.7, "intensity": 0.3, "radius": 3 },
+      "vignette": { "enabled": true, "strength": 0.25 }
+    }
+  },
+  "terminal-80s": {
+    "description": "Green-phosphor CRT terminal. ASCII on black, sharp scanlines, strong decay.",
+    "glyphSet": "asciiDense",
+    "selectionMode": "brightness",
+    "palette": ["#000000", "#0a2e14", "#1f5a2e", "#33803f", "#56b667", "#a5f2b1"],
+    "renderer": "cpu",
+    "postprocess": {
+      "phosphorDecay": { "enabled": true, "decayFactor": 0.92 },
+      "scanlines": { "enabled": true, "intensity": 0.4, "period": 2 },
+      "halation": { "enabled": true, "threshold": 0.3, "intensity": 0.5, "radius": 5 },
+      "vignette": { "enabled": true, "strength": 0.45 },
+      "barrel": { "enabled": true, "strength": 0.08 }
+    }
+  },
+  "teletext": {
+    "description": "Ceefax-era block-mosaic teletext. Flat colors, thick cells, no bloom.",
+    "glyphSet": "blockElements",
+    "selectionMode": "brightness",
+    "palette": ["#000000", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff"],
+    "postprocess": {
+      "scanlines": { "enabled": false }
+    }
+  },
+  "zx-spectrum": {
+    "description": "ZX Spectrum 8×8 attributes. Stark 15-color palette, clamped contrast.",
+    "glyphSet": "blockElements",
+    "selectionMode": "brightness",
+    "palette": ["#000000", "#0022c7", "#002bfb", "#d62816", "#ff331c", "#d433c7", "#ff40fc", "#00c525", "#00f92f", "#00c7c9", "#00f9fc", "#cdc82a", "#fffc36", "#cacaca", "#ffffff"],
+    "postprocess": {
+      "scanlines": { "enabled": true, "intensity": 0.2, "period": 2 }
+    }
+  },
+  "cp437-vga": {
+    "description": "DOS 80-column VGA textmode. PxPlus IBM VGA 8 font, 16 colors.",
+    "glyphSet": "cp437",
+    "selectionMode": "brightness",
+    "fontFamily": "PxPlusIBMVGA8",
+    "palette": ["#000000", "#0000aa", "#00aa00", "#00aaaa", "#aa0000", "#aa00aa", "#aa5500", "#aaaaaa", "#555555", "#5555ff", "#55ff55", "#55ffff", "#ff5555", "#ff55ff", "#ffff55", "#ffffff"],
+    "postprocess": {
+      "scanlines": { "enabled": true, "intensity": 0.15, "period": 2 },
+      "bloom": { "enabled": true, "threshold": 0.8, "intensity": 0.25, "radius": 3 }
+    }
+  },
+  "pico-8": {
+    "description": "PICO-8 16-color fantasy console, braille dither, mild glow.",
+    "glyphSet": "braille",
+    "selectionMode": "shape",
+    "palette": ["#000000", "#1D2B53", "#7E2553", "#008751", "#AB5236", "#5F574F", "#C2C3C7", "#FFF1E8", "#FF004D", "#FFA300", "#FFEC27", "#00E436", "#29ADFF", "#83769C", "#FF77A8", "#FFCCAA"],
+    "postprocess": {
+      "bloom": { "enabled": true, "threshold": 0.75, "intensity": 0.35, "radius": 4 }
+    }
+  }
+}

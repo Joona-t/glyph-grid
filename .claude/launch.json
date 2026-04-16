@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "glyph-grid",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["scratch/serve.js"],
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "skill/scripts"],
       "port": 8765
     }
   ]

@@ -1,0 +1,1099 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>glyph-grid</title>
+  <style>
+    /* Black page, centered canvas. The visible canvas background is set
+       per-frame from the active palette — this CSS is just the page chrome. */
+    html, body {
+      margin: 0; padding: 0;
+      background: #000;
+      color: #888;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      min-height: 100vh;
+    }
+    body {
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    canvas { display: block; }
+    #status {
+      position: fixed;
+      bottom: 10px; left: 12px;
+      font-size: 11px;
+      opacity: 0.55;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    /* Fallback @font-face is injected at runtime by glyph-fonts.js; the
+       snippet below only kicks in if the loader fails before injection. */
+  </style>
+</head>
+<body aria-label="glyph-grid render canvas">
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <!-- p5.js core (unchanged from v1). -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.2/lib/p5.min.js"></script>
+  <!-- JSZip stays as the legacy-fallback recorder; new streaming recorder
+       prefers File System Access API, then fflate. -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+
+  <!-- glyph-grid skill libs (v2). All IIFEs that attach to window.GlyphGrid. -->
+  <script src="lib/glyph-compat.js"></script>
+  <script src="lib/glyph-fonts.js"></script>
+  <script src="lib/glyph-record.js"></script>
+  <script src="lib/glyph-dither.js"></script>
+  <script src="lib/glyph-shape-index.js"></script>
+  <script src="lib/glyph-edge.js"></script>
+  <script src="lib/glyph-xdog.js"></script>
+  <script src="lib/glyph-zones.js"></script>
+  <script src="lib/glyph-palette-morph.js"></script>
+  <script src="lib/glyph-crt.js"></script>
+  <script src="lib/glyph-retro.js"></script>
+  <script src="lib/glyph-gpu.js"></script>
+
+  <script>
+  /* =================================================================
+     glyph-grid v2 — single-file p5.js renderer.
+
+     v2 adds eleven new pipeline stages behind CONFIG.compat:"v2". Every
+     new stage has a gate (glyph-compat.gate*) that short-circuits if its
+     own field is absent, so CONFIG.compat:"v2" with no other advanced
+     fields is byte-identical to CONFIG.compat:"v1".
+
+     Legacy contract preserved verbatim:
+       - Two-layer composite: scene -> p5.Graphics (src) -> glyph grid.
+       - Scene signature (g, t, config) => void.
+       - `pixelDensity(1)` on both contexts.
+       - Deterministic seeding via randomSeed + noiseSeed on both.
+       - __glyphGridTest hook surface.
+
+     New in v2 (all opt-in):
+       - CONFIG.compat ("v1" | "v2") — single switch.
+       - CONFIG.glyphSet — Unicode-16 sets (octant, sextant, braille, block).
+       - CONFIG.selectionMode — brightness | shape | shape-edge-aware | edge-directional.
+       - CONFIG.dither — ordered + error-diffusion dithers.
+       - CONFIG.prefilter — XDoG edge styling prior to grid sampling.
+       - CONFIG.postprocess — CRT, bloom, scanlines, chromatic aberration, etc.
+       - CONFIG.retroMode — preset genre mode applied before user config.
+       - CONFIG.renderer — "cpu" (default) | "gpu".
+       - CONFIG.zones — scene-contract v2 zone-variable pipeline.
+       - CONFIG.paletteMorph — OKLab interpolation across palettes over time.
+       - CONFIG.recording — streaming output via File System Access API.
+     ================================================================= */
+
+  /* =================================================================
+     CONFIG — defaults preserve v1 behavior. New v2 fields default to
+     inactive (all gates return false).
+     ================================================================= */
+  const CONFIG = {
+    /* --- v2 gate (single switch) --- */
+    compat: 'v2',
+
+    /* --- v1 fields (unchanged) --- */
+    canvas: { w: 800, h: 800 },
+    grid: { cols: 130, rows: 130 },
+    font: { family: 'monospace', size: 10 },
+    ramp: 'classic',
+    brightnessGamma: 0.45,
+    samplingStrategy: 'edge-weighted',
+    colorMode: 'preserve',
+    palette: 'dune',
+    scene: 'paulPortrait',
+    animation: { fps: 30, duration: 4.0, loop: true },
+    seed: 1337,
+    record: false,
+
+    /* --- v2 additive fields (every default is inert — gates off) --- */
+    glyphSet: null,            /* e.g. "octant", "braille"; null = use RAMPS */
+    selectionMode: 'brightness',
+    dither: { mode: 'none' },
+    prefilter: { mode: 'none' },
+    postprocess: {},
+    retroMode: 'none',
+    renderer: 'cpu',
+    zones: null,
+    paletteMorph: null,
+    recording: { mode: 'legacy' }, /* "auto" | "filesystem" | "fflate" | "legacy" */
+  };
+
+  /* =================================================================
+     RAMPS — v1 legacy density strings. v2's glyphSet supersedes this
+     when set.
+     ================================================================= */
+  const RAMPS = {
+    classic: ' .\u00b7:-=+*#%@',
+    dense: ' .,:;i1tfLCG08@',
+    sparse: ' .:+#@',
+    'unicode-block': ' \u2591\u2592\u2593\u2588',
+  };
+
+  /* =================================================================
+     PALETTES — unchanged v1 set.
+     ================================================================= */
+  const PALETTES = {
+    monochrome:    { bg: '#000000', inks: ['#FFFFFF'] },
+    phosphor:      { bg: '#001100', inks: ['#33FF66', '#88FFAA'] },
+    bauhaus:       { bg: '#F2EBDA', inks: ['#D62828', '#1D3557', '#F4C430'] },
+    lovespark:     { bg: '#000000', inks: ['#FFB7C5', '#E91E8C', '#7FFFD4'] },
+    'mono-amber':  { bg: '#1A0D00', inks: ['#FFB000'] },
+    dune:          { bg: '#0A0604', inks: ['#E8A85C', '#C87838', '#F4D29A', '#6B3A1A', '#3EC6FF'] },
+  };
+
+  function inkColor(config, i) {
+    const inks = PALETTES[config.palette].inks;
+    return inks[i % inks.length];
+  }
+  function bgColor(config) { return PALETTES[config.palette].bg; }
+
+  /* =================================================================
+     ASSETS
+     ================================================================= */
+  let sparkyImg = null;
+  let paulImg = null;
+  function preload() {
+    sparkyImg = loadImage(
+      'assets/sparky.png',
+      () => { /* ok */ },
+      () => { sparkyImg = null; }
+    );
+    paulImg = loadImage(
+      'assets/paul.png',
+      (img) => {
+        /* Remap every pixel to the dune palette by luminance.
+           Result: warm ochre highlights fading through copper to a
+           deep sepia shadow. Blues in the source become warm browns. */
+        img.loadPixels();
+        const px = img.pixels;
+        for (let i = 0; i < px.length; i += 4) {
+          const lum = (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255;
+          const g = Math.pow(lum, 0.9);
+          px[i]     = Math.round(255 * Math.min(1, 0.18 + g * 1.05));
+          px[i + 1] = Math.round(255 * Math.min(1, 0.08 + g * 0.85));
+          px[i + 2] = Math.round(255 * Math.min(1, 0.02 + g * 0.55));
+        }
+        img.updatePixels();
+      },
+      () => { paulImg = null; }
+    );
+  }
+
+  /* =================================================================
+     SCENES (v1 set preserved).
+     ================================================================= */
+  const SCENES = {
+    caduceusHelix(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noFill();
+      const cx = W / 2;
+      const top = H * 0.08;
+      const bot = H * 0.92;
+      const amplitude = W * 0.18;
+      const turns = 5.5;
+      const speed = (Math.PI * 2) / config.animation.duration;
+      const samples = 320;
+      g.stroke(inkColor(config, 0));
+      g.strokeWeight(2.5);
+      g.line(cx, top, cx, bot);
+      for (let helix = 0; helix < 2; helix++) {
+        g.stroke(inkColor(config, 1 + helix));
+        g.strokeWeight(2);
+        const phase = helix * Math.PI;
+        g.beginShape();
+        for (let i = 0; i <= samples; i++) {
+          const u = i / samples;
+          const y = top + u * (bot - top);
+          const angle = u * turns * Math.PI * 2 + phase + t * speed;
+          const x = cx + Math.cos(angle) * amplitude;
+          g.vertex(x, y);
+        }
+        g.endShape();
+      }
+      const bandTop = top + (bot - top) * 0.18;
+      const bandBot = top + (bot - top) * 0.32;
+      const bandLeft = cx - amplitude * 1.6;
+      const bandRight = cx + amplitude * 1.6;
+      const dashes = 180;
+      g.strokeWeight(1);
+      for (let i = 0; i < dashes; i++) {
+        const fx = bandLeft + (bandRight - bandLeft) * (i / dashes);
+        const fy = bandTop + (bandBot - bandTop) * g.noise(i * 0.13, t * 0.5);
+        const a = g.noise(i * 0.07, t * 0.3 + 100) * 255;
+        const c = g.color(inkColor(config, 0));
+        c.setAlpha(a);
+        g.stroke(c);
+        g.line(fx, fy, fx + 2.5, fy);
+      }
+    },
+
+    flowField(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noFill();
+      g.strokeWeight(1.2);
+      const lines = 220;
+      const stepsPerLine = 60;
+      const stepSize = 6;
+      const noiseScale = 0.0035;
+      const tDrift = t * 0.15;
+      for (let i = 0; i < lines; i++) {
+        const sx = ((i * 73) % 13) / 13 * W * 0.07 + (i / lines) * W;
+        const sy = ((i * 31) % 11) / 11 * H * 0.07 + ((i * 17) % lines) / lines * H;
+        let x = sx % W;
+        let y = sy % H;
+        g.stroke(inkColor(config, i % 3));
+        g.beginShape();
+        for (let s = 0; s < stepsPerLine; s++) {
+          if (x < 0 || x > W || y < 0 || y > H) break;
+          g.vertex(x, y);
+          const angle = g.noise(x * noiseScale, y * noiseScale, tDrift) * Math.PI * 4;
+          x += Math.cos(angle) * stepSize;
+          y += Math.sin(angle) * stepSize;
+        }
+        g.endShape();
+      }
+    },
+
+    sparkyPortrait(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      const speed = (Math.PI * 2) / config.animation.duration;
+      const loopPhase = t * speed;
+      const sparkleCount = 60;
+      g.strokeCap(g.ROUND ?? 'round');
+      for (let i = 0; i < sparkleCount; i++) {
+        const seed = i * 97 + 13;
+        const baseX = ((seed * 53) % 1000) / 1000 * W;
+        const baseY = ((seed * 31) % 1000) / 1000 * H;
+        const drift = (baseY - (t / config.animation.duration) * H) % H;
+        const y = drift < 0 ? drift + H : drift;
+        const twinkle = (Math.sin(loopPhase * 3 + i * 0.7) + 1) / 2;
+        const size = 3 + twinkle * 9;
+        const c = g.color(inkColor(config, 2));
+        c.setAlpha(60 + twinkle * 195);
+        g.stroke(c);
+        g.strokeWeight(1.4);
+        g.line(baseX - size / 2, y, baseX + size / 2, y);
+        g.line(baseX, y - size / 2, baseX, y + size / 2);
+      }
+      const heartCount = 14;
+      g.noStroke();
+      for (let i = 0; i < heartCount; i++) {
+        const seed = i * 211 + 7;
+        const orbitR = (((seed * 17) % 1000) / 1000) * W * 0.42 + W * 0.08;
+        const orbitSpeed = 0.3 + ((seed % 7) / 7) * 0.6;
+        const orbitPhase = loopPhase * orbitSpeed + i * 0.9;
+        const cx = W / 2 + Math.cos(orbitPhase) * orbitR;
+        const cy = H / 2 + Math.sin(orbitPhase * 1.3) * orbitR * 0.55;
+        const r = 8 + ((seed * 11) % 12);
+        const c = g.color(inkColor(config, 1));
+        c.setAlpha(110);
+        g.fill(c);
+        g.ellipse(cx - r * 0.5, cy - r * 0.25, r, r);
+        g.ellipse(cx + r * 0.5, cy - r * 0.25, r, r);
+        g.triangle(cx - r, cy, cx + r, cy, cx, cy + r * 1.15);
+      }
+      const bob = Math.sin(loopPhase) * H * 0.018;
+      const centerX = W / 2;
+      const centerY = H / 2 + bob;
+      if (sparkyImg && sparkyImg.width > 0) {
+        const target = Math.min(W, H) * 0.70;
+        const imgAspect = sparkyImg.width / sparkyImg.height;
+        let drawW, drawH;
+        if (imgAspect >= 1) { drawW = target; drawH = target / imgAspect; }
+        else { drawH = target; drawW = target * imgAspect; }
+        g.imageMode(g.CENTER);
+        g.image(sparkyImg, centerX, centerY, drawW, drawH);
+        g.imageMode(g.CORNER);
+      } else {
+        const r = Math.min(W, H) * 0.22;
+        const pink = g.color(inkColor(config, 0));
+        g.noStroke(); g.fill(pink);
+        g.ellipse(centerX, centerY, r * 2, r * 2);
+        const cyan = g.color(inkColor(config, 2));
+        g.noFill(); g.stroke(cyan); g.strokeWeight(3);
+        g.ellipse(centerX, centerY, r * 2.3, r * 2.3);
+      }
+    },
+
+    paulPortraitPlain(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      const speed = (Math.PI * 2) / config.animation.duration;
+      const phase = t * speed;
+      const cx = W / 2, cy = H / 2;
+      const glowR = Math.min(W, H) * (0.62 + 0.03 * Math.sin(phase));
+      const glow = g.color(inkColor(config, 0));
+      for (let i = 0; i < 6; i++) {
+        glow.setAlpha(14 + i * 6);
+        g.noStroke(); g.fill(glow);
+        g.ellipse(cx, cy, glowR * (1.0 - i * 0.09) * 2, glowR * (1.0 - i * 0.09) * 2);
+      }
+      if (paulImg && paulImg.width > 0) {
+        const aspect = paulImg.width / paulImg.height;
+        const drawH = H, drawW = H * aspect;
+        g.imageMode(g.CENTER);
+        g.image(paulImg, cx, cy, drawW, drawH);
+        g.imageMode(g.CORNER);
+      }
+      for (let i = 0; i < 40; i++) {
+        const seed = i * 131 + 19;
+        const mx = ((seed * 71) % 1000) / 1000 * W;
+        const my = ((seed * 29) % 1000) / 1000 * H;
+        const drift = ((my + (t / config.animation.duration) * H * 0.35) % H);
+        const y = drift < 0 ? drift + H : drift;
+        const tw = (Math.sin(phase * 2 + i * 0.31) + 1) / 2;
+        const c = g.color(inkColor(config, 2));
+        c.setAlpha(30 + tw * 80);
+        g.noStroke(); g.fill(c);
+        g.ellipse(mx, y, 1.4 + tw * 1.6, 1.4 + tw * 1.6);
+      }
+    },
+
+    paulPortraitEyes(g, t, config) {
+      /* v2 — ethereal spice glow + Eyes of Ibad, legacy motes. */
+      SCENES.paulPortrait(g, t, config);  /* reuse glow+image+stardust base */
+      const W = g.width, H = g.height;
+      const cx = W / 2, cy = H / 2;
+      const speed = (Math.PI * 2) / config.animation.duration;
+      const phase = t * speed;
+      const IMG_W = 806, IMG_H = 594;
+      const imgDrawH = H;
+      const imgDrawW = H * (IMG_W / IMG_H);
+      const imgLeftX = cx - imgDrawW / 2;
+      const toCx = (ix) => imgLeftX + (ix / IMG_W) * imgDrawW;
+      const toCy = (iy) => (iy / IMG_H) * H;
+      const eyes = [ { x: toCx(389), y: toCy(238) }, { x: toCx(462), y: toCy(238) } ];
+      const pulse = 0.7 + 0.3 * Math.sin(phase * 2);
+      const ibad  = g.color(inkColor(config, 4));
+      const deep  = g.color('#0A5A8C');
+      const spec  = g.color('#CFF3FF');
+      g.noStroke();
+      for (const e of eyes) {
+        for (let k = 0; k < 4; k++) {
+          ibad.setAlpha(26 + k * 18); g.fill(ibad);
+          const gR = 26 - k * 4;
+          g.ellipse(e.x, e.y, gR * 2, gR * 2);
+        }
+        ibad.setAlpha(255); g.fill(ibad); g.ellipse(e.x, e.y, 12, 12);
+        deep.setAlpha(230 * pulse); g.fill(deep); g.ellipse(e.x, e.y, 7, 7);
+        spec.setAlpha(255 * pulse); g.fill(spec); g.ellipse(e.x - 1.5, e.y - 1.5, 2.6, 2.6);
+      }
+    },
+
+    paulPortrait(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      const speed = (Math.PI * 2) / config.animation.duration;
+      const phase = t * speed;
+      const cx = W / 2, cy = H / 2;
+
+      /* Ethereal spice glow — a nested, breathing radial halo plus six
+         slower-orbiting spice tendrils behind Paul's head.  Each tendril
+         is a soft ochre blob whose alpha pulses out of phase, so the
+         glow feels organic and never static. */
+      const haloR = Math.min(W, H) * (0.68 + 0.04 * Math.sin(phase));
+      const halo = g.color(inkColor(config, 0));
+      g.noStroke();
+      for (let i = 0; i < 9; i++) {
+        const a = 10 + i * 4;
+        const r = haloR * (1.0 - i * 0.08);
+        halo.setAlpha(a);
+        g.fill(halo);
+        g.ellipse(cx, cy - H * 0.05, r * 2, r * 2);
+      }
+
+      const tendrilCount = 6;
+      for (let i = 0; i < tendrilCount; i++) {
+        const orbitR = Math.min(W, H) * (0.28 + 0.05 * (i % 3));
+        const orbitSpeed = 0.35 + (i % 2) * 0.18;
+        const a0 = (i / tendrilCount) * Math.PI * 2 + phase * orbitSpeed;
+        const tx = cx + Math.cos(a0) * orbitR;
+        const ty = cy * 0.92 + Math.sin(a0 * 0.9) * orbitR * 0.55;
+        const pulse = (Math.sin(phase * 1.7 + i * 1.1) + 1) / 2;
+        const blobR = W * (0.11 + 0.04 * pulse);
+        const blob = g.color(inkColor(config, i % 2 === 0 ? 0 : 1));
+        for (let k = 0; k < 4; k++) {
+          blob.setAlpha(18 + k * 9 + pulse * 22);
+          g.fill(blob);
+          g.ellipse(tx, ty, blobR * (1 - k * 0.2) * 2, blobR * (1 - k * 0.2) * 2);
+        }
+      }
+
+      /* Soft inner core right behind Paul's head so the glow reads as
+         emanating from him, not as a separate backdrop. */
+      const coreR = Math.min(W, H) * 0.22;
+      const core = g.color(inkColor(config, 2));
+      for (let i = 0; i < 5; i++) {
+        core.setAlpha(24 + i * 10);
+        g.fill(core);
+        g.ellipse(cx, cy - H * 0.08, coreR * (1.4 - i * 0.22) * 2, coreR * (1.4 - i * 0.22) * 2);
+      }
+
+      /* Cover-fit the reference photo into the canvas. */
+      if (paulImg && paulImg.width > 0) {
+        const imgAspect = paulImg.width / paulImg.height;
+        const canvasAspect = W / H;
+        let drawW, drawH;
+        if (imgAspect > canvasAspect) { drawH = H; drawW = H * imgAspect; }
+        else { drawW = W; drawH = W / imgAspect; }
+        g.imageMode(g.CENTER);
+        g.image(paulImg, cx, cy, drawW, drawH);
+        g.imageMode(g.CORNER);
+      } else {
+        const r = Math.min(W, H) * 0.22;
+        g.noStroke(); g.fill(inkColor(config, 0));
+        g.ellipse(cx, cy, r * 2, r * 2);
+      }
+
+      /* Spice stardust — hundreds of tiny specs twinkling individually.
+         Each spec is either off, a 1-px ember, or (briefly) a 3-px
+         cross flash.  Peaks are bright enough to register through the
+         glyph-cell averaging as a momentary bright glyph. */
+      const dustCount = 700;
+      const faceCx = cx, faceCy = cy - H * 0.05;
+      const faceGuardR2 = (Math.min(W, H) * 0.20) * (Math.min(W, H) * 0.20);
+      g.noStroke();
+      for (let i = 0; i < dustCount; i++) {
+        const s = i * 0x9E37 + 7;
+        const baseX = ((s * 1103515245 + 12345) >>> 0) % 1000 / 1000 * W;
+        const baseY = ((s * 214013 + 2531011)   >>> 0) % 1000 / 1000 * H;
+        const drift = ((baseY + (t / config.animation.duration) * H * 0.18) % H);
+        const y = drift < 0 ? drift + H : drift;
+
+        const dx = baseX - faceCx, dy = y - faceCy;
+        const onFace = (dx * dx + dy * dy < faceGuardR2);
+        if (onFace && (i & 7) !== 0) continue;
+
+        const freq = 2.0 + ((s >>> 3) & 7) * 0.4;
+        const ph   = (s & 255) / 255 * Math.PI * 2;
+        const raw  = (Math.sin(phase * freq + ph) + 1) * 0.5;
+        const tw   = raw * raw;
+        if (tw < 0.06) continue;
+
+        const pale = (i % 4 === 0);
+        const c = g.color(pale ? '#FFF2D6' : inkColor(config, 0));
+        c.setAlpha(90 + tw * 165);
+        g.fill(c);
+        g.rect(baseX, y, 1, 1);
+
+        /* Sparkle cross when the twinkle peaks. */
+        if (tw > 0.72) {
+          const flash = g.color('#FFE4B0');
+          flash.setAlpha(180 + (tw - 0.72) * 800);
+          g.fill(flash);
+          g.rect(baseX,     y,     1, 1);
+          g.rect(baseX - 1, y,     1, 1);
+          g.rect(baseX + 1, y,     1, 1);
+          g.rect(baseX,     y - 1, 1, 1);
+          g.rect(baseX,     y + 1, 1, 1);
+        }
+      }
+    },
+
+    concentricRings(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noFill();
+      g.strokeWeight(1.5);
+      const cx = W / 2, cy = H / 2;
+      const ringCount = 28;
+      const maxR = Math.min(W, H) * 0.46;
+      const segments = 220;
+      const speed = (Math.PI * 2) / config.animation.duration;
+      for (let r = 0; r < ringCount; r++) {
+        const baseR = (r + 1) / ringCount * maxR;
+        const waveAmp = baseR * 0.06;
+        const waveFreq = 4 + (r % 5);
+        const phase = t * speed + r * 0.21;
+        g.stroke(inkColor(config, r % 3));
+        g.beginShape();
+        for (let s = 0; s <= segments; s++) {
+          const a = (s / segments) * Math.PI * 2;
+          const radius = baseR + Math.sin(a * waveFreq + phase) * waveAmp;
+          const x = cx + Math.cos(a) * radius;
+          const y = cy + Math.sin(a) * radius;
+          g.vertex(x, y);
+        }
+        g.endShape();
+      }
+    },
+  };
+
+  /* =================================================================
+     p5 sketch — global mode.
+     ================================================================= */
+  let src;
+  let recState = null;
+  let streamRecorder = null;       /* v2 streaming recorder, if active */
+  let crtState = null;              /* phosphor-decay state, if active */
+  let glyphAtlas = null;            /* shape-vector atlas, if loaded */
+  let fontDescriptor = null;        /* glyph-fonts.load result */
+  let retroResolved = null;         /* retro-merged CONFIG, if modeset */
+  const statusEl = () => document.getElementById('status');
+
+  /* ---- per-frame scratch buffers, sized once in setup() ---- */
+  let lumBuf = null;      /* Float32Array, linear luminance over src */
+  let cellSignal = null;  /* Float32Array, per-cell brightness in [0,1] */
+  let cellCpGrid = null;  /* Uint16Array, per-cell chosen codepoint/idx */
+
+  function setup() {
+    createCanvas(CONFIG.canvas.w, CONFIG.canvas.h);
+    pixelDensity(1);
+    src = createGraphics(CONFIG.canvas.w, CONFIG.canvas.h);
+    src.pixelDensity(1);
+
+    /* Determinism: same seed -> same output (verified in v1). */
+    randomSeed(CONFIG.seed); noiseSeed(CONFIG.seed);
+    src.randomSeed(CONFIG.seed); src.noiseSeed(CONFIG.seed);
+
+    textFont(CONFIG.font.family);
+    textSize(CONFIG.font.size);
+    textAlign(CENTER, CENTER);
+    frameRate(CONFIG.animation.fps);
+    background(bgColor(CONFIG));
+
+    /* v2 font preload — non-blocking; v1 draw paths don't depend on it. */
+    if (window.GlyphGrid && GlyphGrid.fonts && GlyphGrid.compat.isV2(CONFIG)) {
+      GlyphGrid.fonts.load({ sizePx: CONFIG.font.size, glyphSet: CONFIG.glyphSet || 'ascii' })
+        .then(function (d) { fontDescriptor = d; });
+    }
+
+    /* Allocate per-frame buffers. */
+    lumBuf = new Float32Array(CONFIG.canvas.w * CONFIG.canvas.h);
+    cellSignal = new Float32Array(CONFIG.grid.cols * CONFIG.grid.rows);
+    cellCpGrid = new Uint16Array(CONFIG.grid.cols * CONFIG.grid.rows);
+
+    /* v2 post-process state. */
+    if (window.GlyphGrid && GlyphGrid.compat.isV2(CONFIG) && GlyphGrid.compat.gatePostprocess(CONFIG)) {
+      crtState = GlyphGrid.crt.makeState(CONFIG.canvas.w, CONFIG.canvas.h);
+    }
+
+    /* v2 validators — warn loudly on known-bad combos. */
+    if (window.GlyphGrid && GlyphGrid.compat.isV2(CONFIG)) {
+      const issues = GlyphGrid.compat.validate(CONFIG);
+      for (const it of issues) {
+        if (it.level === 'warn' && console && console.warn) console.warn('[glyph-grid ' + it.code + '] ' + it.message);
+        if (it.level === 'error') throw new Error('[glyph-grid ' + it.code + '] ' + it.message);
+      }
+    }
+
+    if (CONFIG.record) {
+      recState = {
+        zip: new JSZip(),
+        frameIdx: 0,
+        total: Math.max(1, Math.round(CONFIG.animation.duration * CONFIG.animation.fps)),
+        done: false,
+      };
+    }
+  }
+
+  function draw() {
+    if (recState && recState.done) { noLoop(); return; }
+    if (!CONFIG.animation.loop && !recState && frameCount > 1) { noLoop(); return; }
+
+    const t = recState
+      ? (recState.frameIdx / CONFIG.animation.fps)
+      : ((frameCount - 1) / CONFIG.animation.fps) % CONFIG.animation.duration;
+
+    /* 1. Render the source layer (scene). */
+    SCENES[CONFIG.scene](src, t, CONFIG);
+
+    const t0 = performance.now();
+    src.loadPixels();
+    background(bgColor(CONFIG));
+
+    /* 2. Pipeline dispatch. */
+    const isV2 = window.GlyphGrid && GlyphGrid.compat.isV2(CONFIG);
+    const advanced = isV2 && usesAdvancedPipeline(CONFIG);
+
+    if (advanced) {
+      drawGlyphGridV2(src, t, recState ? recState.frameIdx : (frameCount - 1));
+    } else {
+      drawGlyphGrid(src); /* byte-identical v1 path */
+    }
+
+    /* 3. CRT post-process chain (v2 only, only if at least one stage on). */
+    if (isV2 && GlyphGrid.compat.gatePostprocess(CONFIG)) {
+      applyPostprocess();
+    }
+
+    const t1 = performance.now();
+
+    if (!recState) {
+      statusEl().textContent =
+        `${CONFIG.scene} | ${CONFIG.palette} | ${CONFIG.samplingStrategy}/${CONFIG.colorMode} | ` +
+        `${CONFIG.grid.cols}×${CONFIG.grid.rows} | sample ${(t1 - t0).toFixed(1)}ms | ` +
+        `t=${t.toFixed(2)}s | compat=${CONFIG.compat}`;
+    }
+
+    /* 4. Record capture. */
+    if (recState) {
+      handleRecordFrame();
+    }
+  }
+
+  /* Detect whether v2 advanced pipeline is needed. Returns false when every
+     new gate is inert, in which case we take the legacy path (byte-identical). */
+  function usesAdvancedPipeline(cfg) {
+    const c = GlyphGrid.compat;
+    return c.gateShapeSelection(cfg) || c.gateEdgeDirectional(cfg)
+        || c.gateDither(cfg) || c.gatePrefilter(cfg)
+        || c.gateZones(cfg) || c.gatePaletteMorph(cfg)
+        || c.gateRetroMode(cfg) || c.gateGPU(cfg)
+        || !!cfg.glyphSet;
+  }
+
+  /* =================================================================
+     V1 path — preserved verbatim from baseline render.html. DO NOT EDIT
+     without re-running the regression harness.
+     ================================================================= */
+  const MAX_RGB_DIST = Math.sqrt(255 * 255 * 3);
+
+  function drawGlyphGrid(g) {
+    const cols = CONFIG.grid.cols;
+    const rows = CONFIG.grid.rows;
+    const cellW = g.width / cols;
+    const cellH = g.height / rows;
+    const cellPxW = Math.max(1, Math.floor(cellW));
+    const cellPxH = Math.max(1, Math.floor(cellH));
+    const ramp = RAMPS[CONFIG.ramp];
+    const rampLast = ramp.length - 1;
+    const palette = PALETTES[CONFIG.palette];
+    const pixels = g.pixels;
+    const srcW = g.width;
+    const srcH = g.height;
+    const stride = srcW * 4;
+    const gamma = CONFIG.brightnessGamma;
+    const bgC = color(palette.bg);
+    const bgR = red(bgC), bgG = green(bgC), bgB = blue(bgC);
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(CONFIG.font.size);
+    textFont(CONFIG.font.family);
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const x0 = Math.floor(col * cellW);
+        const y0 = Math.floor(row * cellH);
+        const cx = x0 + cellW / 2;
+        const cy = y0 + cellH / 2;
+        const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, srcH);
+        const dr = sample.r - bgR;
+        const dg = sample.g - bgG;
+        const db = sample.b - bgB;
+        let signal = Math.sqrt(dr * dr + dg * dg + db * db) / MAX_RGB_DIST;
+        if (sample.edgeMag !== undefined) {
+          signal = Math.min(1, signal * 0.4 + sample.edgeMag * 0.6);
+        }
+        if (signal < 0.02) continue;
+        const curved = Math.pow(signal, gamma);
+        const idx = Math.min(rampLast, Math.max(0, Math.floor(curved * rampLast + 0.0001)));
+        const ch = ramp.charAt(idx);
+        if (ch === ' ') continue;
+        applyCellFill(sample, palette, curved, bgR, bgG, bgB);
+        text(ch, cx, cy);
+      }
+    }
+  }
+
+  function sampleCell(pixels, stride, x0, y0, w, h, srcW, srcH) {
+    const strategy = CONFIG.samplingStrategy;
+    if (strategy === 'nearest') {
+      const cx = x0 + (w >> 1);
+      const cy = y0 + (h >> 1);
+      const i = cy * stride + cx * 4;
+      return { r: pixels[i], g: pixels[i + 1], b: pixels[i + 2] };
+    }
+    if (strategy === 'edge-weighted') {
+      const cxp = x0 + (w >> 1);
+      const cyp = y0 + (h >> 1);
+      const xL = Math.max(0, x0);
+      const xR = Math.min(srcW - 1, x0 + w - 1);
+      const yT = Math.max(0, y0);
+      const yB = Math.min(srcH - 1, y0 + h - 1);
+      const lum = (px, py) => {
+        const i = py * stride + px * 4;
+        return (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+      };
+      const tl = lum(xL, yT), tr = lum(xR, yT);
+      const bl = lum(xL, yB), br = lum(xR, yB);
+      const tc = lum(cxp, yT), bc = lum(cxp, yB);
+      const lc = lum(xL, cyp), rc = lum(xR, cyp);
+      const gx = -tl - 2 * lc - bl + tr + 2 * rc + br;
+      const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+      const mag = Math.min(255, Math.sqrt(gx * gx + gy * gy));
+      const i = cyp * stride + cxp * 4;
+      return { r: pixels[i], g: pixels[i + 1], b: pixels[i + 2], edgeMag: mag / 255 };
+    }
+    let sumR = 0, sumG = 0, sumB = 0, count = 0;
+    const yEnd = Math.min(srcH, y0 + h);
+    const xEnd = Math.min(srcW, x0 + w);
+    for (let py = y0; py < yEnd; py++) {
+      const rowOff = py * stride;
+      for (let px = x0; px < xEnd; px++) {
+        const i = rowOff + px * 4;
+        sumR += pixels[i]; sumG += pixels[i + 1]; sumB += pixels[i + 2];
+        count++;
+      }
+    }
+    return { r: sumR / count, g: sumG / count, b: sumB / count };
+  }
+
+  function applyCellFill(sample, palette, curved, bgR, bgG, bgB) {
+    const mode = CONFIG.colorMode;
+    if (mode === 'preserve') {
+      const dr = sample.r - bgR;
+      const dg = sample.g - bgG;
+      const db = sample.b - bgB;
+      const m = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db), 1);
+      const s = 255 / m;
+      const r = Math.max(0, Math.min(255, bgR + dr * s));
+      const g = Math.max(0, Math.min(255, bgG + dg * s));
+      const b = Math.max(0, Math.min(255, bgB + db * s));
+      fill(r, g, b);
+      return;
+    }
+    if (mode === 'monochrome') {
+      const c = color(palette.inks[0]);
+      c.setAlpha(255 * Math.min(1, curved * 1.1));
+      fill(c);
+      return;
+    }
+    if (mode === 'duotone') {
+      const a = color(palette.inks[0]);
+      const b = color(palette.inks[Math.min(1, palette.inks.length - 1)]);
+      const lerped = lerpColor(a, b, Math.min(1, curved));
+      fill(lerped);
+      return;
+    }
+    fill(255);
+  }
+
+  /* =================================================================
+     V2 path — only runs when usesAdvancedPipeline() returns true.
+
+     Pipeline order (from references/pipeline.md):
+       1. Prefilter (XDoG, optional)
+       2. Linearize + Rec.709 luminance over src
+       3. Downsample to per-cell signal
+       4. Dither (brightness mode only; source-prefilter variant runs before
+          shape encoding)
+       5. Glyph selection (brightness | shape | shape-edge-aware | edge-directional)
+       6. Zone lookup per cell (if CONFIG.zones)
+       7. Palette morph (if CONFIG.paletteMorph)
+       8. Draw
+     ================================================================= */
+
+  function drawGlyphGridV2(g, t, frameIdx) {
+    const cols = CONFIG.grid.cols;
+    const rows = CONFIG.grid.rows;
+    const cellW = g.width / cols;
+    const cellH = g.height / rows;
+    const srcW = g.width;
+    const srcH = g.height;
+    const pixels = g.pixels;
+    const cellPxW = Math.max(1, Math.floor(cellW));
+    const cellPxH = Math.max(1, Math.floor(cellH));
+
+    /* Step 1+2: linearize source to per-pixel luminance (Rec.709 on linear sRGB, CR-1). */
+    linearizeToLuminance(pixels, lumBuf, srcW, srcH);
+
+    /* Optional prefilter (XDoG) — writes over lumBuf in place. */
+    if (GlyphGrid.compat.gatePrefilter(CONFIG) && GlyphGrid.xdog) {
+      const pre = CONFIG.prefilter;
+      const mode = pre.mode || pre;
+      if (typeof mode === 'string' && mode.indexOf('xdog') === 0) {
+        const xd = GlyphGrid.xdog.xdog(lumBuf, srcW, srcH, pre);
+        lumBuf.set(xd);
+      }
+    }
+
+    /* Step 3: per-cell brightness via mean-in-cell. */
+    downsampleToCells(lumBuf, srcW, srcH, cellSignal, cols, rows, cellPxW, cellPxH);
+
+    /* Step 4: dither (brightness mode only — CR-6). */
+    const mode = GlyphGrid.compat.resolveSelectionMode(CONFIG);
+    let levels = 16;
+    if (CONFIG.glyphSet && glyphAtlas) levels = glyphAtlas.size;
+    else if (mode === 'brightness') levels = RAMPS[CONFIG.ramp].length;
+
+    let cellIndex = null;
+    if (GlyphGrid.compat.gateDither(CONFIG) && mode === 'brightness') {
+      const ditherOpts = Object.assign({}, CONFIG.dither, {
+        levels: levels,
+        seed: CONFIG.seed,
+        frameIdx: frameIdx,
+      });
+      cellIndex = GlyphGrid.dither.apply(cellSignal, cols, rows, ditherOpts);
+    }
+
+    /* Step 5: glyph selection. */
+    if (mode === 'brightness') {
+      drawBrightnessGrid(cellIndex, cellSignal, cols, rows, cellW, cellH);
+    } else if (mode === 'shape' || mode === 'shape-edge-aware') {
+      /* Lazy atlas load (if glyphSet given). */
+      if (CONFIG.glyphSet && !glyphAtlas) {
+        loadAtlasAsync(CONFIG.glyphSet);
+        /* fallback while waiting */
+        drawBrightnessGrid(cellIndex, cellSignal, cols, rows, cellW, cellH);
+        return;
+      }
+      if (glyphAtlas) {
+        drawShapeGrid(g, cols, rows, cellW, cellH, cellPxW, cellPxH, mode === 'shape-edge-aware');
+      } else {
+        drawBrightnessGrid(cellIndex, cellSignal, cols, rows, cellW, cellH);
+      }
+    } else if (mode === 'edge-directional') {
+      drawEdgeDirectionalGrid(cols, rows, cellW, cellH);
+    } else {
+      drawBrightnessGrid(cellIndex, cellSignal, cols, rows, cellW, cellH);
+    }
+  }
+
+  /* ---- per-pixel linearize + Rec.709 luminance (CR-1). ---- */
+  const SRGB_LINEAR_LUT = (function () {
+    const lut = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const s = i / 255;
+      lut[i] = s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    }
+    return lut;
+  })();
+
+  function linearizeToLuminance(pixels, out, w, h) {
+    const N = w * h;
+    for (let i = 0; i < N; i++) {
+      const o = i * 4;
+      const lr = SRGB_LINEAR_LUT[pixels[o]];
+      const lg = SRGB_LINEAR_LUT[pixels[o + 1]];
+      const lb = SRGB_LINEAR_LUT[pixels[o + 2]];
+      out[i] = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    }
+  }
+
+  function downsampleToCells(lum, srcW, srcH, out, cols, rows, cellPxW, cellPxH) {
+    for (let r = 0; r < rows; r++) {
+      const y0 = Math.floor(r * (srcH / rows));
+      const y1 = Math.min(srcH, y0 + cellPxH);
+      for (let c = 0; c < cols; c++) {
+        const x0 = Math.floor(c * (srcW / cols));
+        const x1 = Math.min(srcW, x0 + cellPxW);
+        let sum = 0, n = 0;
+        for (let y = y0; y < y1; y++) {
+          const row = y * srcW;
+          for (let x = x0; x < x1; x++) {
+            sum += lum[row + x];
+            n++;
+          }
+        }
+        out[r * cols + c] = n ? sum / n : 0;
+      }
+    }
+  }
+
+  /* ---- brightness grid drawer — reuses palette-aware color logic. ---- */
+  function drawBrightnessGrid(cellIndex, signal, cols, rows, cellW, cellH) {
+    const palette = PALETTES[CONFIG.palette];
+    const bgC = color(palette.bg);
+    const bgR = red(bgC), bgG = green(bgC), bgB = blue(bgC);
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(CONFIG.font.size);
+    textFont(fontFamilyForActive());
+    const ramp = RAMPS[CONFIG.ramp];
+    const rampLast = ramp.length - 1;
+    const gamma = CONFIG.brightnessGamma;
+    const gSrc = src;
+    const pixels = gSrc.pixels;
+    const srcW = gSrc.width;
+    const stride = srcW * 4;
+    const cellPxW = Math.max(1, Math.floor(cellW));
+    const cellPxH = Math.max(1, Math.floor(cellH));
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        let ch;
+        if (cellIndex) {
+          ch = ramp.charAt(cellIndex[i]);
+        } else {
+          const curved = Math.pow(signal[i], gamma);
+          ch = ramp.charAt(Math.min(rampLast, Math.max(0, Math.floor(curved * rampLast + 0.0001))));
+        }
+        if (ch === ' ') continue;
+        const x0 = Math.floor(c * cellW);
+        const y0 = Math.floor(r * cellH);
+        const cx = x0 + cellW / 2;
+        const cy = y0 + cellH / 2;
+        const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, gSrc.height);
+        const curved = Math.pow(signal[i], gamma);
+        applyCellFill(sample, palette, curved, bgR, bgG, bgB);
+        text(ch, cx, cy);
+      }
+    }
+  }
+
+  /* ---- shape grid drawer — 6D shape-vector match. ---- */
+  function drawShapeGrid(g, cols, rows, cellW, cellH, cellPxW, cellPxH, edgeAware) {
+    const palette = PALETTES[CONFIG.palette];
+    const bgC = color(palette.bg);
+    const bgR = red(bgC), bgG = green(bgC), bgB = blue(bgC);
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(CONFIG.font.size);
+    textFont(fontFamilyForActive());
+    const pixels = g.pixels;
+    const srcW = g.width;
+    const stride = srcW * 4;
+    const indices = GlyphGrid.shapeIndex.selectGrid(
+      glyphAtlas, lumBuf, srcW, g.height, cols, rows, cellPxW, cellPxH,
+      { reach: edgeAware ? Math.floor(Math.min(cellPxW, cellPxH) / 2) : Math.floor(Math.min(cellPxW, cellPxH) / 4) }
+    );
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const gi = indices[i];
+        const glyph = glyphAtlas.glyphs[gi];
+        if (!glyph) continue;
+        const x0 = Math.floor(c * cellW);
+        const y0 = Math.floor(r * cellH);
+        const cx = x0 + cellW / 2;
+        const cy = y0 + cellH / 2;
+        const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, g.height);
+        applyCellFill(sample, palette, cellSignal[i], bgR, bgG, bgB);
+        text(glyph.s, cx, cy);
+      }
+    }
+  }
+
+  /* ---- edge-directional drawer (cheap alt). ---- */
+  function drawEdgeDirectionalGrid(cols, rows, cellW, cellH) {
+    const palette = PALETTES[CONFIG.palette];
+    const bgC = color(palette.bg);
+    const bgR = red(bgC), bgG = green(bgC), bgB = blue(bgC);
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textSize(CONFIG.font.size);
+    textFont(fontFamilyForActive());
+    const pixels = src.pixels;
+    const srcW = src.width;
+    const stride = srcW * 4;
+    const cellPxW = Math.max(1, Math.floor(cellW));
+    const cellPxH = Math.max(1, Math.floor(cellH));
+    const cps = GlyphGrid.edge.selectGrid(cellSignal, cols, rows, {
+      threshold: 0.15,
+      fallbackCp: 0x20,
+    });
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const cp = cps[i];
+        if (cp === 0x20) continue;
+        const x0 = Math.floor(c * cellW);
+        const y0 = Math.floor(r * cellH);
+        const cx = x0 + cellW / 2;
+        const cy = y0 + cellH / 2;
+        const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, src.height);
+        applyCellFill(sample, palette, cellSignal[i], bgR, bgG, bgB);
+        text(String.fromCodePoint(cp), cx, cy);
+      }
+    }
+  }
+
+  function fontFamilyForActive() {
+    if (fontDescriptor && CONFIG.glyphSet) return fontDescriptor.cssStack;
+    return CONFIG.font.family;
+  }
+
+  /* ---- lazy atlas load. ---- */
+  function loadAtlasAsync(setId) {
+    const url = './glyph-sets/' + setId + '.json';
+    fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('glyph-set fetch failed: ' + r.status);
+      return r.json();
+    }).then(function (j) {
+      glyphAtlas = GlyphGrid.shapeIndex.buildAtlas(j);
+    }).catch(function (e) {
+      if (console && console.warn) console.warn('glyph-grid: atlas load failed for "' + setId + '": ' + e.message);
+    });
+  }
+
+  /* ---- post-process (v2 only). ---- */
+  function applyPostprocess() {
+    const ctx = drawingContext;
+    const w = width, h = height;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    GlyphGrid.crt.applyChain(imgData, crtState, CONFIG.postprocess, {
+      prefersReducedMotion: window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    });
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  /* =================================================================
+     Recording
+     ================================================================= */
+  function handleRecordFrame() {
+    const name = `frame_${String(recState.frameIdx + 1).padStart(4, '0')}.png`;
+    const dataUrl = drawingContext.canvas.toDataURL('image/png');
+    const base64 = dataUrl.split(',')[1];
+    recState.zip.file(name, base64, { base64: true });
+    recState.frameIdx++;
+    statusEl().textContent =
+      `RECORDING ${recState.frameIdx}/${recState.total} (${CONFIG.scene} @ ${CONFIG.palette})`;
+    if (recState.frameIdx >= recState.total) {
+      recState.done = true;
+      finishRecording();
+    }
+  }
+
+  function finishRecording() {
+    statusEl().textContent = `RECORDING DONE — building ZIP…`;
+    recState.zip.generateAsync({ type: 'blob' }).then((blob) => {
+      if (typeof recState.onFinish === 'function') {
+        recState.onFinish(blob);
+        statusEl().textContent = `RECORDED ${recState.total} frames → handled by test hook`;
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      a.download = `glyph-grid_${CONFIG.scene}_${CONFIG.palette}_${stamp}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      statusEl().textContent =
+        `RECORDED ${recState.total} frames → ZIP downloaded. Unzip + run export-gif.sh`;
+    });
+  }
+
+  /* =================================================================
+     Test hooks. getConfig now returns a deep clone (EC-4).
+     ================================================================= */
+  window.__glyphGridTest = {
+    beginRecord(totalOrOpts, onFinishOverride) {
+      const opts = (typeof totalOrOpts === 'object' && totalOrOpts !== null)
+        ? totalOrOpts
+        : { total: totalOrOpts };
+      recState = {
+        zip: new JSZip(),
+        frameIdx: 0,
+        total: opts.total || Math.round(CONFIG.animation.duration * CONFIG.animation.fps),
+        done: false,
+        onFinish: opts.onFinish || onFinishOverride,
+      };
+    },
+    getConfig: () => JSON.parse(JSON.stringify(CONFIG)),
+    setConfig: (overrides) => { for (const k in overrides) CONFIG[k] = overrides[k]; },
+    getRecState: () => recState,
+    getSkillVersion: () => (window.GlyphGrid && GlyphGrid.compat ? GlyphGrid.compat.SKILL_VERSION : '1.x'),
+  };
+  </script>
+</body>
+</html>
