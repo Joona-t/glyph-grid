@@ -1,0 +1,18 @@
+{
+  "name": "glyph-grid-harness",
+  "private": true,
+  "version": "2.0.0",
+  "description": "Headless regression harness for the glyph-grid skill: Playwright capture + ΔE94 diff against golden PNGs.",
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "diff": "node diff.mjs",
+    "regen-goldens": "node capture.mjs --goldens",
+    "test": "node run.mjs"
+  },
+  "dependencies": {
+    "pixelmatch": "^5.3.0",
+    "pngjs": "^7.0.0",
+    "playwright": "^1.44.0"
+  }
+}

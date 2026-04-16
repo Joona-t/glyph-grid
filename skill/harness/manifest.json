@@ -1,0 +1,5 @@
+[
+  { "piece": "../scripts/render.html", "seed": 1, "frame": 0, "threshold": 1.0 },
+  { "piece": "../scripts/render.html", "seed": 1, "frame": 60, "threshold": 1.0 },
+  { "piece": "../scripts/render.html", "seed": 1, "frame": 119, "threshold": 1.0 }
+]
