@@ -51,11 +51,17 @@
   <script src="lib/glyph-shape-index.js"></script>
   <script src="lib/glyph-edge.js"></script>
   <script src="lib/glyph-xdog.js"></script>
-  <script src="lib/glyph-zones.js"></script>
   <script src="lib/glyph-palette-morph.js"></script>
   <script src="lib/glyph-crt.js"></script>
-  <script src="lib/glyph-retro.js"></script>
-  <script src="lib/glyph-gpu.js"></script>
+  <!-- Wave 1 runtime + Wave 2 outputs (order-sensitive). -->
+  <script src="lib/glyph-runtime.js"></script>
+  <script src="lib/glyph-primitives.js"></script>
+  <script src="lib/glyph-outputs.js"></script>
+  <script src="lib/glyph-composition.js"></script>
+  <script src="lib/glyph-sources.js"></script>
+  <script src="lib/glyph-sampling.js"></script>
+  <script src="lib/glyph-polish.js"></script>
+  <script src="lib/glyph-wave6.js"></script>
 
   <script>
   /* =================================================================
@@ -115,9 +121,6 @@
     dither: { mode: 'none' },
     prefilter: { mode: 'none' },
     postprocess: {},
-    retroMode: 'none',
-    renderer: 'cpu',
-    zones: null,
     paletteMorph: null,
     recording: { mode: 'legacy' }, /* "auto" | "filesystem" | "fflate" | "legacy" */
   };
@@ -645,8 +648,7 @@
     const c = GlyphGrid.compat;
     return c.gateShapeSelection(cfg) || c.gateEdgeDirectional(cfg)
         || c.gateDither(cfg) || c.gatePrefilter(cfg)
-        || c.gateZones(cfg) || c.gatePaletteMorph(cfg)
-        || c.gateRetroMode(cfg) || c.gateGPU(cfg)
+        || c.gatePaletteMorph(cfg)
         || !!cfg.glyphSet;
   }
 

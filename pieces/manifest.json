@@ -1,0 +1,37 @@
+{
+  "version": "1.0.0",
+  "pieces": [
+    {
+      "id": "paul-atreides-dune",
+      "path": "pieces/paul-atreides-dune",
+      "entry": "index.html",
+      "title": "Paul Atreides — Dune",
+      "description": "Warm-ochre portrait with ethereal spice glow and sub-pixel stardust.",
+      "scenes": [
+        "paulPortraitPlain",
+        "paulPortraitEyes",
+        "paulPortrait"
+      ],
+      "defaultScene": "paulPortrait",
+      "fps": 30,
+      "totalFrames": 120,
+      "viewport": { "w": 800, "h": 800 },
+      "testFrames": [0, 60, 119],
+      "threshold": 1.0
+    },
+    {
+      "id": "shai-hulud-arrival",
+      "path": "pieces/shai-hulud-arrival",
+      "entry": "index.html",
+      "title": "Shai-Hulud · Arrival",
+      "description": "Cinematic 2.4:1 landscape. Depth-aware haze, god rays, salient-ROI figures, OKLab gradient colour mode.",
+      "scenes": ["shaiHuludArrival"],
+      "defaultScene": "shaiHuludArrival",
+      "fps": 30,
+      "totalFrames": 120,
+      "viewport": { "w": 1200, "h": 500 },
+      "testFrames": [30, 60],
+      "threshold": 5.0
+    }
+  ]
+}

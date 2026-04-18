@@ -1,15 +1,15 @@
 ---
 name: glyph-grid
-description: Use when the user asks for ASCII art, character-grid renderers, glyph-density shading, p5.js generative text art, or anything in the style of @macbethAI / Kyle McDonald / fogleman. Scaffolds a new single-file p5.js sketch from the glyph-grid template, edits the CONFIG to match the request, and renders it. v2 adds Unicode 16 octants, shape-vector selection, dithering, XDoG, CRT post-process, retro modes, and a GPU path — all behind `CONFIG.compat` so v1 pieces stay byte-identical. Also handles Sparky (LoveSpark mascot) glyph portraits. Trigger phrases: "make me an ASCII art piece", "glyph-grid sketch", "character-grid visualization", "ASCII portrait of sparky", "p5.js flow field in ascii", "text-mode art", "CRT terminal ascii", "octant art".
+description: Use when the user asks for ASCII art, character-grid renderers, glyph-density shading, p5.js generative text art, or anything in the style of @macbethAI / fogleman / demoscene terminal art. Scaffolds a new single-file p5.js sketch from the glyph-grid template, edits the CONFIG to match the request, and renders it. v2 adds Unicode 16 octants, shape-vector selection, dithering, XDoG prefilter, and a CRT post-process chain — all behind `CONFIG.compat` so v1 pieces stay byte-identical. Also handles Sparky (LoveSpark mascot) glyph portraits. Trigger phrases: "make me an ASCII art piece", "glyph-grid sketch", "character-grid visualization", "ASCII portrait of sparky", "p5.js flow field in ascii", "text-mode art", "CRT terminal ascii", "octant art".
 ---
 
 # glyph-grid — reusable p5.js ASCII / Unicode-art renderer skill
 
 This skill packages a single-file p5.js renderer that composites animated geometric scenes as character-grid overlays, preserving source color. Two layers: a real `p5.Graphics` buffer holds the scene, and a sampling pass walks an N×M grid, picks a glyph per cell, and draws it colored from the source. No framework, no build — one HTML file plus the `lib/` folder of modular add-ons.
 
-**v2.0.0** adds 11 new pipeline stages (shape-vector selection, dithering, XDoG, CRT post chain, retro modes, GPU path, streaming recording, and more). A single switch — `CONFIG.compat: "v1" | "v2"` — gates every new stage. Pieces rendered under `compat: "v1"` are byte-identical to the pre-upgrade output. The v2 default leaves new stages inert unless you opt in.
+**v2.0.0** adds 7 new pipeline stages (shape-vector selection, dithering, XDoG prefilter, CRT post chain, depth / depth-fog, salient ROIs, palette-morph gradient). A single switch — `CONFIG.compat: "v1" | "v2"` — gates every new stage. Pieces rendered under `compat: "v1"` are byte-identical to the pre-upgrade output. The v2 default leaves new stages inert unless you opt in.
 
-**Inspired by [Nous Research's Hermes Agent](https://github.com/NousResearch/hermes-agent)** and the [agentskills.io](https://agentskills.io) open standard. Rendering technique from Kyle McDonald's `ofxAsciiArt`, fogleman's geometric reductions, demoscene terminal art, @macbethAI, and Alex Harri's 2024 shape-vector method.
+Rendering technique from TeehanLax's `ofxAsciiArt` (inspired by Sol's TextFX, often miscredited to Kyle McDonald), fogleman's geometric reductions, demoscene terminal art, and Alex Harri's 2024 shape-vector method.
 
 ## When to use this skill
 
@@ -48,7 +48,6 @@ The template lives at `scripts/render.html`. It imports modular libs from `scrip
    cp ~/.claude/skills/glyph-grid/scripts/render.html <dir>/index.html
    cp ~/.claude/skills/glyph-grid/scripts/export-gif.sh <dir>/
    cp ~/.claude/skills/glyph-grid/scripts/lib/*.js <dir>/lib/
-   cp ~/.claude/skills/glyph-grid/scripts/retro-mode-presets.json <dir>/
    cp ~/.claude/skills/glyph-grid/glyph-sets/*.json <dir>/glyph-sets/ 2>/dev/null
    cp ~/.claude/skills/glyph-grid/fonts/*.woff* <dir>/fonts/ 2>/dev/null
    cp ~/.claude/skills/glyph-grid/fonts/LICENSE <dir>/fonts/
@@ -69,21 +68,20 @@ The template lives at `scripts/render.html`. It imports modular libs from `scrip
 
    **v2 fields (opt-in):**
    - `compat`: `"v1"` (frozen) | `"v2"` (default, gates inert without fields)
-   - `glyphSet`: `'ascii' | 'asciiDense' | 'boxDrawing' | 'blockElements' | 'braille' | 'sextant' | 'octant' | 'cp437'`
+   - `glyphSet`: `'ascii' | 'asciiDense' | 'blockElements' | 'braille' | 'sextant' | 'octant'`
    - `selectionMode`: `'brightness' | 'shape' | 'shape-edge-aware' | 'edge-directional'`
    - `dither`: `{ mode: 'none' | 'bayer4' | 'bayer8' | 'blueNoise' | 'temporal' | 'floydSteinberg' | 'atkinson' | 'jarvisJudiceNinke' }`
    - `prefilter`: `{ mode: 'xdog', sigma, k, tau, phi, epsilon }`
-   - `postprocess`: `{ scanlines: {...}, bloom: {...}, phosphorDecay: {...}, chromaticAberration: {...}, barrel: {...}, vignette: {...} }`
-   - `retroMode`: `'amiga-500' | 'terminal-80s' | 'teletext' | 'zx-spectrum' | 'cp437-vga' | 'pico-8'`
-   - `renderer`: `'cpu'` (default) | `'gpu'`
-   - `paletteMorph`: `{ enabled: true, palettes: [...] }`
-   - `zones`: `{ enabled: true, 1: {...}, 2: {...} }`
+   - `postprocess`: `{ scanlines, bloom, phosphorDecay, chromaticAberration, barrel, vignette, godRays, letterbox, halation }` (each with `enabled: true/false`)
+   - `paletteMorph`: gradient-color-map interpolation only (animated variant in Wave 3 roadmap, not shipping yet)
+   - `depth`: `{ enabled: true }` + scene returns `{ depth: p5.Graphics }` to power depth-fog & god-rays
+   - `grid.salientROIs`: `[{ x, y, w, h, bump }]` — oversample regions for tiny features
 
 4. **New scenes** must keep the locked signature:
    ```
-   scene(g: p5.Graphics, t: number, config: CONFIG) => void
+   scene(g: p5.Graphics, t: number, config: CONFIG) => void | { depth?: p5.Graphics }
    ```
-   v2 optionally returns `{ zones: p5.Graphics }` for zone-variable pipelines — see `references/scene-contract-v2.md`.
+   The optional return lets postprocess read a depth map.
 
 5. **Render.** Open `index.html` in a browser. No server required unless you need headless screenshotting, in which case:
    ```bash
@@ -108,9 +106,8 @@ The template lives at `scripts/render.html`. It imports modular libs from `scrip
 | "loop slower" | raise `animation.duration` (default 4.0s) |
 | **v2:** "octant art with shape matching" | `compat: 'v2', glyphSet: 'octant', selectionMode: 'shape'` |
 | **v2:** "XDoG ink-drawing style" | `prefilter: { mode: 'xdog', sigma: 1.2 }, selectionMode: 'shape-edge-aware'` |
-| **v2:** "pure 80s CRT terminal" | `retroMode: 'terminal-80s'` |
-| **v2:** "animated palette across the loop" | `paletteMorph: { enabled: true, palettes: ['lovespark', 'phosphor'] }` |
-| **v2:** "GPU-accelerated" | `renderer: 'gpu'` |
+| **v2:** "CRT terminal look" | `postprocess: { scanlines: {enabled:true}, bloom: {enabled:true}, vignette: {enabled:true} }` |
+| **v2:** "cinematic depth haze" | scene returns `{ depth }`; `postprocess: { depthFog: {enabled:true}, godRays: {enabled:true} }` |
 
 ## Decision: parametric geometry vs image-composite
 
@@ -137,11 +134,8 @@ Unchanged from v1:
 - `references/edge-aware-glyphs.md` — Sobel + directional alphabet, Rec.709 math (T1.2, CR-1).
 - `references/dithering.md` — dither modes + GPU restriction (T1.4, CR-4, CR-6).
 - `references/xdog.md` — Extended DoG prefilter (T2.1, CR-5).
-- `references/zones.md` — zone-variable CONFIG (T2.3).
 - `references/palette-morph.md` — OKLab palette interpolation (T2.4).
 - `references/crt-postprocess.md` — CRT chain + loop pre-roll (T2.2, CR-8, CR-9).
-- `references/retro-modes.md` — preset genre modes (T3.1).
-- `references/gpu-renderer.md` — WebGL2 path (T3.2).
 - `references/recording.md` — streaming recording (IM-5).
 - `references/performance-budget.md` — frame-time targets + CPU↔GPU crossover.
 

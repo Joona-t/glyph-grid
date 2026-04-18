@@ -51,11 +51,25 @@
   <script src="lib/glyph-shape-index.js"></script>
   <script src="lib/glyph-edge.js"></script>
   <script src="lib/glyph-xdog.js"></script>
-  <script src="lib/glyph-zones.js"></script>
   <script src="lib/glyph-palette-morph.js"></script>
   <script src="lib/glyph-crt.js"></script>
-  <script src="lib/glyph-retro.js"></script>
-  <script src="lib/glyph-gpu.js"></script>
+  <!-- Wave 1 runtime (load AFTER all primitive libs; order-sensitive). -->
+  <script src="lib/glyph-runtime.js"></script>
+  <script src="lib/glyph-primitives.js"></script>
+  <!-- Wave 2 outputs. -->
+  <script src="lib/glyph-outputs.js"></script>
+  <!-- Wave 3 composition. -->
+  <script src="lib/glyph-composition.js"></script>
+  <!-- Wave 4 sources (feedback/audio/camera/video/data/canvas/RD/CA/flow). -->
+  <script src="lib/glyph-sources.js"></script>
+  <!-- Wave 5 sampling topologies. -->
+  <script src="lib/glyph-sampling.js"></script>
+  <!-- Polish: additional colors/selections/output + palettes. -->
+  <script src="lib/glyph-polish.js"></script>
+  <!-- Wave 6: postprocess.crt-chain, selection.harri-faithful,
+       output.webgl-canvas + perf instrumentation, source.pointer/keyboard,
+       output.audio-synth. -->
+  <script src="lib/glyph-wave6.js"></script>
 
   <script>
   /* =================================================================
@@ -115,9 +129,6 @@
     dither: { mode: 'none' },
     prefilter: { mode: 'none' },
     postprocess: {},
-    retroMode: 'none',
-    renderer: 'cpu',
-    zones: null,
     paletteMorph: null,
     recording: { mode: 'legacy' }, /* "auto" | "filesystem" | "fflate" | "legacy" */
   };
@@ -131,6 +142,12 @@
     dense: ' .,:;i1tfLCG08@',
     sparse: ' .:+#@',
     'unicode-block': ' \u2591\u2592\u2593\u2588',
+    /* v2.1 — denser near-monotonic ramp for smooth tonal gradients
+       (pairs with colorMode:"gradient") */
+    gradient: '  .,:;-~+=<>*oOwmM8B#%@',
+    /* v2.1 — glyphs biased toward radial / diagonal strokes for
+       radially-symmetric features like sandworm maw filaments */
+    radial: ' .*+xX%vY',
   };
 
   /* =================================================================
@@ -301,6 +318,35 @@
       }
     },
 
+    /* v2.1 smoke-test scene — paints a horizontal luminance gradient
+       into `g` and returns a depth map where the left half is near
+       (1.0) and the right half is far (0.0).  Used to verify depth-fog
+       and god-rays stages end-to-end. */
+    depthSmoke(g, t, config) {
+      const W = g.width, H = g.height;
+      g.background(bgColor(config));
+      g.noStroke();
+      for (let y = 0; y < H; y += 4) {
+        for (let x = 0; x < W; x += 4) {
+          const u = x / W;
+          const shade = Math.round(40 + u * 215);
+          g.fill(shade, shade, shade);
+          g.rect(x, y, 4, 4);
+        }
+      }
+      if (!config.depth || !config.depth.enabled) return;
+      if (!this.__smokeDepth) this.__smokeDepth = createGraphics(W, H);
+      const d = this.__smokeDepth;
+      d.noStroke();
+      for (let x = 0; x < W; x += 4) {
+        const u = x / W;
+        const r = Math.round((1 - u) * 255);  /* left=near(1), right=far(0) */
+        d.fill(r, 0, 0);
+        d.rect(x, 0, 4, H);
+      }
+      return { depth: d };
+    },
+
     concentricRings(g, t, config) {
       const W = g.width, H = g.height;
       g.background(bgColor(config));
@@ -340,12 +386,17 @@
   let glyphAtlas = null;            /* shape-vector atlas, if loaded */
   let fontDescriptor = null;        /* glyph-fonts.load result */
   let retroResolved = null;         /* retro-merged CONFIG, if modeset */
+  let gradientStopsCache = null;    /* { key, stops } — parsed OKLab stops for gradient colorMode */
+  let sceneResult = null;           /* captured scene return: { zones?, depth? } */
+  let depthImg = null;              /* current scene's depth p5.Graphics (R channel = depth) */
+  let currentCellDepth = -1;        /* sentinel; v2 draw loops set this per-cell to feed depth fog */
   const statusEl = () => document.getElementById('status');
 
   /* ---- per-frame scratch buffers, sized once in setup() ---- */
   let lumBuf = null;      /* Float32Array, linear luminance over src */
   let cellSignal = null;  /* Float32Array, per-cell brightness in [0,1] */
   let cellCpGrid = null;  /* Uint16Array, per-cell chosen codepoint/idx */
+  let cellDepth = null;   /* Float32Array, per-cell depth in [0,1] (v2.1 depth channel) */
 
   function setup() {
     createCanvas(CONFIG.canvas.w, CONFIG.canvas.h);
@@ -373,6 +424,7 @@
     lumBuf = new Float32Array(CONFIG.canvas.w * CONFIG.canvas.h);
     cellSignal = new Float32Array(CONFIG.grid.cols * CONFIG.grid.rows);
     cellCpGrid = new Uint16Array(CONFIG.grid.cols * CONFIG.grid.rows);
+    cellDepth = new Float32Array(CONFIG.grid.cols * CONFIG.grid.rows);
 
     /* v2 post-process state. */
     if (window.GlyphGrid && GlyphGrid.compat.isV2(CONFIG) && GlyphGrid.compat.gatePostprocess(CONFIG)) {
@@ -396,6 +448,32 @@
         done: false,
       };
     }
+
+    /* Wave 1: expose v1 host helpers so runtime primitives can reach into
+       the p5 environment without duplicating code. Only populated once. */
+    if (window.GlyphGrid && window.GlyphGrid.runtime && !window.GlyphGrid.v1) {
+      window.GlyphGrid.v1 = Object.freeze({
+        srcGraphics: function () { return src; },
+        outputCanvas: function () {
+          /* p5 writes to the main <canvas>; locate it. */
+          return document.querySelector('canvas');
+        },
+        linearizeToLuminance: linearizeToLuminance,
+      });
+    }
+    /* Wave 1: if a piece has declared window.PIPELINE, allocate scratch pool
+       for registered primitives. Harmless if PIPELINE is absent. */
+    if (window.PIPELINE && window.GlyphGrid && window.GlyphGrid.runtime) {
+      try {
+        window.GlyphGrid.runtime.initPool(
+          CONFIG.canvas.w, CONFIG.canvas.h,
+          (CONFIG.grid && CONFIG.grid.cols) || 80,
+          (CONFIG.grid && CONFIG.grid.rows) || 40
+        );
+      } catch (e) {
+        console.error('[glyph-grid runtime init] ' + (e.message || e));
+      }
+    }
   }
 
   function draw() {
@@ -406,8 +484,31 @@
       ? (recState.frameIdx / CONFIG.animation.fps)
       : ((frameCount - 1) / CONFIG.animation.fps) % CONFIG.animation.duration;
 
+    /* Wave 1 opt-in path: a piece may declare `window.PIPELINE = pipeline()...`
+       to run through the new runtime. When present, it fully replaces the
+       legacy draw path. Absent → legacy v1/v2-advanced path runs unchanged. */
+    if (window.PIPELINE && window.GlyphGrid && window.GlyphGrid.runtime) {
+      const rt = window.GlyphGrid.runtime;
+      const ctx = rt.makeContext({
+        t: t,
+        frameIdx: recState ? recState.frameIdx : (frameCount - 1),
+        seed: CONFIG.seed,
+        config: CONFIG,
+      });
+      /* run() is async for output primitives that need awaits; we fire and
+         forget for now. Errors surface via console. Pipelines that produce
+         rendered output do so synchronously before the await point. */
+      rt.run(window.PIPELINE, ctx).catch(function (e) {
+        console.error('[pipeline] ' + (e.message || e));
+      });
+      if (recState) { handleRecordFrame(); }
+      return;
+    }
+
     /* 1. Render the source layer (scene). */
-    SCENES[CONFIG.scene](src, t, CONFIG);
+    sceneResult = SCENES[CONFIG.scene](src, t, CONFIG) || null;
+    depthImg = (sceneResult && sceneResult.depth && sceneResult.depth.width > 0)
+      ? sceneResult.depth : null;
 
     const t0 = performance.now();
     src.loadPixels();
@@ -449,8 +550,8 @@
     const c = GlyphGrid.compat;
     return c.gateShapeSelection(cfg) || c.gateEdgeDirectional(cfg)
         || c.gateDither(cfg) || c.gatePrefilter(cfg)
-        || c.gateZones(cfg) || c.gatePaletteMorph(cfg)
-        || c.gateRetroMode(cfg) || c.gateGPU(cfg)
+        || c.gatePaletteMorph(cfg)
+        || c.gateDepth(cfg) || c.gateSalientROIs(cfg)
         || !!cfg.glyphSet;
   }
 
@@ -551,32 +652,113 @@
 
   function applyCellFill(sample, palette, curved, bgR, bgG, bgB) {
     const mode = CONFIG.colorMode;
+    const depthActive = (currentCellDepth >= 0) && GlyphGrid.compat.gateDepthFog(CONFIG);
+
+    /* Fast path: no depth fog, no gradient → call p5 fill directly and
+       avoid the extra arithmetic.  Byte-identical with pre-v2.1 output. */
+    if (!depthActive) {
+      if (mode === 'preserve') {
+        const dr = sample.r - bgR;
+        const dg = sample.g - bgG;
+        const db = sample.b - bgB;
+        const m = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db), 1);
+        const s = 255 / m;
+        const r = Math.max(0, Math.min(255, bgR + dr * s));
+        const g = Math.max(0, Math.min(255, bgG + dg * s));
+        const b = Math.max(0, Math.min(255, bgB + db * s));
+        fill(r, g, b);
+        return;
+      }
+      if (mode === 'monochrome') {
+        const c = color(palette.inks[0]);
+        c.setAlpha(255 * Math.min(1, curved * 1.1));
+        fill(c);
+        return;
+      }
+      if (mode === 'duotone') {
+        const a = color(palette.inks[0]);
+        const b = color(palette.inks[Math.min(1, palette.inks.length - 1)]);
+        const lerped = lerpColor(a, b, Math.min(1, curved));
+        fill(lerped);
+        return;
+      }
+      if (mode === 'gradient') {
+        const stops = resolveGradientStops(palette);
+        if (stops && stops.length > 0) {
+          const gmap = CONFIG.gradientColorMap || {};
+          const curve = typeof gmap.curve === 'number' ? gmap.curve : 1.0;
+          const u = Math.pow(Math.min(1, Math.max(0, curved)), curve);
+          const rgb = GlyphGrid.paletteMorph.interpAtU(stops, u);
+          fill(rgb[0], rgb[1], rgb[2]);
+          return;
+        }
+      }
+      fill(255);
+      return;
+    }
+
+    /* Depth-fog path: resolve base colour, then lerp toward the fog
+       colour weighted by cellDepth before calling fill.  Only reached
+       when gateDepthFog() is true, so v1 pieces never pay this cost. */
+    let r = 255, g = 255, b = 255, alpha = 255;
     if (mode === 'preserve') {
       const dr = sample.r - bgR;
       const dg = sample.g - bgG;
       const db = sample.b - bgB;
       const m = Math.max(Math.abs(dr), Math.abs(dg), Math.abs(db), 1);
       const s = 255 / m;
-      const r = Math.max(0, Math.min(255, bgR + dr * s));
-      const g = Math.max(0, Math.min(255, bgG + dg * s));
-      const b = Math.max(0, Math.min(255, bgB + db * s));
-      fill(r, g, b);
-      return;
-    }
-    if (mode === 'monochrome') {
+      r = Math.max(0, Math.min(255, bgR + dr * s));
+      g = Math.max(0, Math.min(255, bgG + dg * s));
+      b = Math.max(0, Math.min(255, bgB + db * s));
+    } else if (mode === 'monochrome') {
       const c = color(palette.inks[0]);
-      c.setAlpha(255 * Math.min(1, curved * 1.1));
-      fill(c);
-      return;
+      r = red(c); g = green(c); b = blue(c);
+      alpha = 255 * Math.min(1, curved * 1.1);
+    } else if (mode === 'duotone') {
+      const ca = color(palette.inks[0]);
+      const cb = color(palette.inks[Math.min(1, palette.inks.length - 1)]);
+      const lerped = lerpColor(ca, cb, Math.min(1, curved));
+      r = red(lerped); g = green(lerped); b = blue(lerped);
+    } else if (mode === 'gradient') {
+      const stops = resolveGradientStops(palette);
+      if (stops && stops.length > 0) {
+        const gmap = CONFIG.gradientColorMap || {};
+        const curve = typeof gmap.curve === 'number' ? gmap.curve : 1.0;
+        const u = Math.pow(Math.min(1, Math.max(0, curved)), curve);
+        const rgb = GlyphGrid.paletteMorph.interpAtU(stops, u);
+        r = rgb[0]; g = rgb[1]; b = rgb[2];
+      }
     }
-    if (mode === 'duotone') {
-      const a = color(palette.inks[0]);
-      const b = color(palette.inks[Math.min(1, palette.inks.length - 1)]);
-      const lerped = lerpColor(a, b, Math.min(1, curved));
-      fill(lerped);
-      return;
-    }
-    fill(255);
+
+    const fog = CONFIG.postprocess.depthFog;
+    const fstart = typeof fog.start === 'number' ? fog.start : 0.4;
+    const fend   = typeof fog.end   === 'number' ? fog.end   : 1.0;
+    const fint   = typeof fog.intensity === 'number' ? fog.intensity : 0.6;
+    /* Depth convention: 1.0 = near, 0.0 = far.  Fog kicks in as depth
+       falls below `fend` and reaches max when it passes `fstart`. */
+    const tRaw = (fend - currentCellDepth) / (fend - fstart);
+    const tf = Math.max(0, Math.min(1, tRaw)) * fint;
+    const fc = color(fog.color || '#E8D4B8');
+    const fr = red(fc), fg = green(fc), fb = blue(fc);
+    r = r * (1 - tf) + fr * tf;
+    g = g * (1 - tf) + fg * tf;
+    b = b * (1 - tf) + fb * tf;
+    fill(r, g, b, alpha);
+  }
+
+  /* Cache-aware parse of CONFIG.gradientColorMap.stops (falls back to
+     the palette's ink list).  Reparses only when the stop list changes. */
+  function resolveGradientStops(palette) {
+    const gmap = CONFIG.gradientColorMap;
+    const src = (gmap && Array.isArray(gmap.stops) && gmap.stops.length > 0)
+      ? gmap.stops
+      : (palette && palette.inks) || [];
+    if (!src || src.length === 0) return null;
+    const key = src.join('|');
+    if (gradientStopsCache && gradientStopsCache.key === key) return gradientStopsCache.stops;
+    const parsed = GlyphGrid.paletteMorph.parse(src);
+    gradientStopsCache = { key: key, stops: parsed };
+    return parsed;
   }
 
   /* =================================================================
@@ -621,6 +803,14 @@
     /* Step 3: per-cell brightness via mean-in-cell. */
     downsampleToCells(lumBuf, srcW, srcH, cellSignal, cols, rows, cellPxW, cellPxH);
 
+    /* v2.1 — optional depth downsample.  Respects CONFIG.depth.invert /
+       range so scenes can author depth maps with arbitrary polarity. */
+    if (GlyphGrid.compat.gateDepth(CONFIG) && depthImg) {
+      downsampleDepthToCells(depthImg, cellDepth, cols, rows);
+    } else {
+      cellDepth.fill(-1);  /* sentinel → depth-fog fast-path skips lerp */
+    }
+
     /* Step 4: dither (brightness mode only — CR-6). */
     const mode = GlyphGrid.compat.resolveSelectionMode(CONFIG);
     let levels = 16;
@@ -658,6 +848,75 @@
     } else {
       drawBrightnessGrid(cellIndex, cellSignal, cols, rows, cellW, cellH);
     }
+
+    /* v2.1 — overdraw salient ROIs at higher density so tiny features
+       (figures, faces) survive the coarse 8x8-cell averaging. */
+    if (GlyphGrid.compat.gateSalientROIs(CONFIG)) {
+      drawSalientROIs(g, CONFIG.grid.salientROIs);
+    }
+  }
+
+  /* v2.1 — per-ROI finer-grid overdraw.  Each roi is { x, y, w, h, bump }
+     in [0,1] normalized coords; bump ∈ [2,4] multiplies the base
+     density inside that rect.  ROI contents are cleared to bg first
+     so the finer pass lands cleanly on top of the coarse draw. */
+  function drawSalientROIs(g, rois) {
+    const palette = PALETTES[CONFIG.palette];
+    const bgC = color(palette.bg);
+    const bgR = red(bgC), bgG = green(bgC), bgB = blue(bgC);
+    const ramp = RAMPS[CONFIG.ramp];
+    const rampLast = ramp.length - 1;
+    const gamma = CONFIG.brightnessGamma;
+    const pixels = g.pixels;
+    const srcW = g.width, srcH = g.height;
+    const stride = srcW * 4;
+    const baseCols = CONFIG.grid.cols;
+    const baseRows = CONFIG.grid.rows;
+    const origCellW = srcW / baseCols;
+    const origCellH = srcH / baseRows;
+    noStroke();
+    textAlign(CENTER, CENTER);
+    textFont(fontFamilyForActive());
+    const prevFontSize = CONFIG.font.size;
+    for (const roi of rois) {
+      const bump = Math.max(2, Math.min(4, Math.floor(roi.bump || 2)));
+      const rx0 = Math.floor((roi.x || 0) * srcW);
+      const ry0 = Math.floor((roi.y || 0) * srcH);
+      const rw = Math.floor((roi.w || 0) * srcW);
+      const rh = Math.floor((roi.h || 0) * srcH);
+      if (rw < 2 || rh < 2) continue;
+      const roiCols = Math.max(1, Math.round(rw / origCellW * bump));
+      const roiRows = Math.max(1, Math.round(rh / origCellH * bump));
+      const roiCellW = rw / roiCols;
+      const roiCellH = rh / roiRows;
+      const cellPxW = Math.max(1, Math.floor(roiCellW));
+      const cellPxH = Math.max(1, Math.floor(roiCellH));
+      fill(bgR, bgG, bgB);
+      rect(rx0, ry0, rw, rh);
+      textSize(prevFontSize / bump);
+      for (let r = 0; r < roiRows; r++) {
+        for (let c = 0; c < roiCols; c++) {
+          const x0 = rx0 + Math.floor(c * roiCellW);
+          const y0 = ry0 + Math.floor(r * roiCellH);
+          const cx = x0 + roiCellW / 2;
+          const cy = y0 + roiCellH / 2;
+          const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, srcH);
+          const dr = sample.r - bgR;
+          const dg = sample.g - bgG;
+          const db = sample.b - bgB;
+          let signal = Math.sqrt(dr * dr + dg * dg + db * db) / MAX_RGB_DIST;
+          if (sample.edgeMag !== undefined) signal = Math.min(1, signal * 0.4 + sample.edgeMag * 0.6);
+          if (signal < 0.02) continue;
+          const curved = Math.pow(signal, gamma);
+          const idx = Math.min(rampLast, Math.max(0, Math.floor(curved * rampLast + 0.0001)));
+          const ch = ramp.charAt(idx);
+          if (ch === ' ') continue;
+          applyCellFill(sample, palette, curved, bgR, bgG, bgB);
+          text(ch, cx, cy);
+        }
+      }
+    }
+    textSize(prevFontSize);
   }
 
   /* ---- per-pixel linearize + Rec.709 luminance (CR-1). ---- */
@@ -701,6 +960,40 @@
     }
   }
 
+  /* v2.1 — downsample a p5.Graphics's R channel into per-cell depth in
+     [0,1].  Caller guarantees gateDepth(CONFIG) is true.  Depth
+     convention: 1.0 = near, 0.0 = far.  `CONFIG.depth.invert` flips
+     the polarity before normalisation so scenes may author maps either
+     way.  `range` clips the usable band. */
+  function downsampleDepthToCells(dImg, out, cols, rows) {
+    dImg.loadPixels();
+    const px = dImg.pixels;
+    const w = dImg.width, h = dImg.height;
+    const invert = !!(CONFIG.depth && CONFIG.depth.invert);
+    const range = (CONFIG.depth && Array.isArray(CONFIG.depth.range)) ? CONFIG.depth.range : [0, 1];
+    const lo = range[0], hi = range[1], span = Math.max(0.0001, hi - lo);
+    for (let r = 0; r < rows; r++) {
+      const y0 = Math.floor(r * (h / rows));
+      const y1 = Math.min(h, Math.ceil((r + 1) * (h / rows)));
+      for (let c = 0; c < cols; c++) {
+        const x0 = Math.floor(c * (w / cols));
+        const x1 = Math.min(w, Math.ceil((c + 1) * (w / cols)));
+        let sum = 0, n = 0;
+        for (let y = y0; y < y1; y++) {
+          const rowBase = y * w * 4;
+          for (let x = x0; x < x1; x++) {
+            sum += px[rowBase + x * 4];  /* R channel */
+            n++;
+          }
+        }
+        let d = n ? (sum / n) / 255 : 0;
+        if (invert) d = 1 - d;
+        d = Math.max(0, Math.min(1, (d - lo) / span));
+        out[r * cols + c] = d;
+      }
+    }
+  }
+
   /* ---- brightness grid drawer — reuses palette-aware color logic. ---- */
   function drawBrightnessGrid(cellIndex, signal, cols, rows, cellW, cellH) {
     const palette = PALETTES[CONFIG.palette];
@@ -736,10 +1029,12 @@
         const cy = y0 + cellH / 2;
         const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, gSrc.height);
         const curved = Math.pow(signal[i], gamma);
+        currentCellDepth = cellDepth[i];
         applyCellFill(sample, palette, curved, bgR, bgG, bgB);
         text(ch, cx, cy);
       }
     }
+    currentCellDepth = -1;
   }
 
   /* ---- shape grid drawer — 6D shape-vector match. ---- */
@@ -769,10 +1064,12 @@
         const cx = x0 + cellW / 2;
         const cy = y0 + cellH / 2;
         const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, g.height);
+        currentCellDepth = cellDepth[i];
         applyCellFill(sample, palette, cellSignal[i], bgR, bgG, bgB);
         text(glyph.s, cx, cy);
       }
     }
+    currentCellDepth = -1;
   }
 
   /* ---- edge-directional drawer (cheap alt). ---- */
@@ -803,10 +1100,12 @@
         const cx = x0 + cellW / 2;
         const cy = y0 + cellH / 2;
         const sample = sampleCell(pixels, stride, x0, y0, cellPxW, cellPxH, srcW, src.height);
+        currentCellDepth = cellDepth[i];
         applyCellFill(sample, palette, cellSignal[i], bgR, bgG, bgB);
         text(String.fromCodePoint(cp), cx, cy);
       }
     }
+    currentCellDepth = -1;
   }
 
   function fontFamilyForActive() {

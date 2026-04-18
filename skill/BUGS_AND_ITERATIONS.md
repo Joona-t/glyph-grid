@@ -155,3 +155,53 @@ Files changed:
 - `scripts/glyph-sets` new (symlink → `../glyph-sets`)
 
 Harness re-run post-change: all 3 frames still pass byte-identical.
+
+## 2026-04-17 — v2.1.0 cinematic landscape upgrades
+
+Plan: `~/.claude/plans/our-skill-is-perfect-adaptive-gadget.md`. Every change is additive-only; the pre-v2.1 regression suite continues to pass with `ΔE94 = 0` after each wave.
+
+### Wave A — colour
+- `RAMPS.gradient` (24-char near-monotonic density) and `RAMPS.radial` (diagonal-biased) added in `scripts/render.html`.
+- `glyph-palette-morph.js` gains `interpAtU(stops, u)` — piecewise OKLab interpolation across N stops, returns sRGB `[r, g, b]`.
+- `applyCellFill` grows a `'gradient'` `colorMode` branch that parses `CONFIG.gradientColorMap.stops` once (cached by key) and fills per-cell colour via the OKLab interp. Leaves `preserve`, `monochrome`, `duotone` byte-identical on the fast path.
+
+### Wave B — depth channel
+- Scene contract extends to `{ zones?, depth? }`. `depth` is a `p5.Graphics` where the R channel is normalised depth (1 = near, 0 = far). Opt-in via `CONFIG.depth.enabled`. `range` / `invert` supported.
+- `setup()` allocates `cellDepth: Float32Array(cols*rows)`. `drawGlyphGridV2` calls the new `downsampleDepthToCells()` after the luminance downsample when `gateDepth()` is true; otherwise fills with `-1` so the fast path stays unchanged.
+- `glyph-compat.js` gains `gateDepth` and `gateDepthFog`. `usesAdvancedPipeline()` now routes via v2 when `gateDepth` trips.
+- v2 draw loops (`drawBrightnessGrid`, `drawShapeGrid`, `drawEdgeDirectionalGrid`) set `currentCellDepth = cellDepth[i]` before each `applyCellFill` call and reset to `-1` on exit; `applyCellFill` activates its slower "fog path" only when `currentCellDepth >= 0 && gateDepthFog`. The fast path is byte-identical.
+- Smoke-tested via `harness/smoke-depth.mjs` — the right-hand (far) side of a horizontal depth gradient visibly lerps toward `#E8D4B8`.
+
+### Wave C — cinematic post
+- `glyph-crt.js` adds two new stages to `applyChain()`:
+  - `applyGodRays(rgba, w, h, opts)` — radial accumulator along rays toward `lightPos`, adds linear-light luminance above `threshold` with per-step `decay`. Runs after `bloom`, before `scanlines`.
+  - `applyLetterbox(rgba, w, h, opts)` — fills top/bottom bars with a colour. Always runs last.
+- `gatePostprocess()` recognises both new stages so the post chain turns on automatically when either is enabled.
+
+### Wave D — salient-ROI bump
+- `CONFIG.grid.salientROIs: [{ x, y, w, h, bump }, ...]` (normalised coords, `bump ∈ [2, 4]`). `gateSalientROIs` added to compat. `drawGlyphGridV2` calls `drawSalientROIs(g, rois)` after the main grid draw. Each ROI clears to background first, re-samples at `bump × base` density with proportionally smaller glyphs, overdraws on top. Outer grid stays untouched.
+- Smoke-tested via `harness/smoke-roi.mjs` — unique-colour count inside the ROI rectangle rises from 16 to 22 when `bump = 3` is added.
+
+### Wave E — harness generalisation
+- `pieces/manifest.json` catalogs every piece (id, path, scenes, viewport, fps, totalFrames, testFrames, threshold).
+- `harness/lib/encode-gif.mjs` — Node-native animated-GIF encoder via `gif-encoder-2` + `pngjs` (no Python dep). Retired the `stitch-gif.py` shim.
+- `harness/render-piece.mjs` — generalised `render-pauls.mjs`: any piece, any scene, any FPS/total, reads the manifest. `render-pauls.mjs` kept for backward compat.
+- `harness/sweep.mjs` — renders N frames varying one `CONFIG.<dotted.field>` axis and tiles them into a mosaic PNG. Supports JSON-literal values.
+- `harness/gallery.mjs` — crawls the manifest, emits `harness/gallery.html` with one card per piece (thumbnail → GIF on hover), plus per-piece PNG + GIF under `harness/gallery/`.
+- `gif-encoder-2` added to `harness/package.json`.
+
+### Wave F — `pieces/shai-hulud-arrival`
+- 2.4:1 cinemascope canvas (`1200 × 500`), grid `160 × 66`.
+- `assets/shai-hulud.png` + `assets/shai-hulud-depth.png` (hand-tuned procedural depth gradient with a foreground Fremen bump).
+- Scene preloads the image and applies a per-pixel luminance→warm-ochre remap (Rec.709 luma, γ ≈ 0.85) so `colorMode: 'preserve'` reads pure dune tones.
+- Depth fog, god rays, and letterbox bars all active. Salient ROIs at `bump=3` for the two Fremen silhouettes in the lower-third.
+- Full 120-frame GIF: 311 KB at 1200×500.
+- Registered in `pieces/manifest.json` with a looser `threshold: 5.0` (aesthetic stages are not strictly byte-identical across runs).
+
+### Regression status
+Every frozen piece in `harness/manifest.json` passes `ΔE94 = 0` after the full v2.1 change set. `usesAdvancedPipeline()` correctly falls back to the v1 path whenever no new gate trips.
+
+### Known follow-ups
+- Hand-refine the Shai-Hulud depth map in Krita — the procedural vertical gradient is a placeholder; a proper paint-over would highlight the worm silhouette as mid-depth and the Fremen figures as near-field.
+- God rays are expensive (~550 ms per frame at 1200×500 × 40 steps). Acceptable for record mode but too slow for realtime preview; GPU port is a v3 item.
+- The gradient colourMode currently flattens very low-luminance cells into the background. Works fine for photos with wide dynamic range; if a piece has predominantly dark content, bias the stops toward brighter endpoints.

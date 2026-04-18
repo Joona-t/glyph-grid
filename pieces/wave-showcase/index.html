@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>glyph-grid · Waves 2–5 showcase</title>
+  <style>
+    html, body { margin: 0; background: #000; color: #888;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    body { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 12px; min-height: 100vh; }
+    .tile { background: #050505; border: 1px solid #1f1f1f; padding: 6px;
+      display: flex; flex-direction: column; }
+    .tile h3 { margin: 0 0 4px 0; font-size: 11px; font-weight: 400;
+      color: #E91E8C; letter-spacing: 0.05em; text-transform: uppercase; }
+    .tile canvas { display: block; background: #000; width: 100%; height: auto; }
+    .tile .desc { margin-top: 4px; font-size: 10px; color: #666; opacity: 0.85; }
+  </style>
+</head>
+<body aria-label="glyph-grid Waves 2-5 showcase">
+
+  <!-- External deps -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.11.2/lib/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+
+  <!-- glyph-grid skill libs -->
+  <script src="lib/glyph-compat.js"></script>
+  <script src="lib/glyph-fonts.js"></script>
+  <script src="lib/glyph-record.js"></script>
+  <script src="lib/glyph-dither.js"></script>
+  <script src="lib/glyph-shape-index.js"></script>
+  <script src="lib/glyph-edge.js"></script>
+  <script src="lib/glyph-xdog.js"></script>
+  <script src="lib/glyph-palette-morph.js"></script>
+  <script src="lib/glyph-crt.js"></script>
+  <script src="lib/glyph-runtime.js"></script>
+  <script src="lib/glyph-primitives.js"></script>
+  <script src="lib/glyph-outputs.js"></script>
+  <script src="lib/glyph-composition.js"></script>
+  <script src="lib/glyph-sources.js"></script>
+  <script src="lib/glyph-sampling.js"></script>
+  <script src="lib/glyph-polish.js"></script>
+  <script src="lib/glyph-wave6.js"></script>
+
+  <script>
+  /* Showcase: 6 tiles, each running a distinct pipeline that exercises
+     different Wave 2-5 primitives. No p5 legacy path. Pure runtime. */
+
+  const W = 320, H = 320;
+  const TILES = [
+    { id: 'rd',       title: '1. Reaction-Diffusion → ramp-palette',
+      desc: 'source.reaction-diffusion → sampling.uniform-grid → color.ramp-palette(solar-flare)' },
+    { id: 'flow',     title: '2. Flow-field → hexagonal → morph',
+      desc: 'source.flow-field → sampling.hexagonal → color.palette-morph' },
+    { id: 'life',     title: '3. Conway Life → radial sampling',
+      desc: 'source.cellular-automaton(life) → sampling.radial → color.gradient-stops' },
+    { id: 'feedback', title: '4. Feedback decay loop',
+      desc: 'source.feedback → transform.gamma → sampling.phyllotaxis → color.ramp-palette' },
+    { id: 'voronoi',  title: '5. Noise → Voronoi tiles',
+      desc: 'source.noise → sampling.voronoi(120 sites) → color.ramp-palette(synthwave)' },
+    { id: 'logpolar', title: '6. Flow → log-polar tunnel + dither',
+      desc: 'source.flow-field → sampling.log-polar → selection.dither-brightness' },
+  ];
+
+  /* Build the DOM. */
+  for (const t of TILES) {
+    const tile = document.createElement('div'); tile.className = 'tile';
+    const h3 = document.createElement('h3'); h3.textContent = t.title; tile.appendChild(h3);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    c.id = 'canvas-' + t.id; tile.appendChild(c);
+    const d = document.createElement('div'); d.className = 'desc'; d.textContent = t.desc; tile.appendChild(d);
+    document.body.appendChild(tile);
+  }
+
+  /* Build pipelines. */
+  function buildPipelines() {
+    const rt = window.GlyphGrid.runtime;
+    return {
+      /* All ramps deliberately exclude leading space so every cell draws
+         *something* — avoids the "mostly-blank" failure mode on small tiles. */
+      rd: rt.pipeline()
+        .source('reaction-diffusion', { w: 160, h: 160, iterPerFrame: 5, feed: 0.037, kill: 0.06 })
+        .sampling('uniform-grid', { cols: 64, rows: 64 })
+        .selection('brightness', { ramp: '.:-=+*#%@', gamma: 0.6 })
+        .color('ramp-palette', { palette: 'solar-flare' })
+        .output('topology-aware-canvas', { bg: '#0A0020', fontSize: 6 }),
+
+      flow: rt.pipeline()
+        .source('flow-field', { w: W, h: H, particles: 2400, steps: 50, tDrift: 0.1, scale: 1/55 })
+        .transform('gamma', { value: 0.5 })
+        .sampling('hexagonal', { cols: 32 })
+        .selection('brightness', { ramp: '.-=+*#%@' })
+        .color('palette-morph', { paletteA: 'phosphor', paletteB: 'synthwave', period: 3 })
+        .output('topology-aware-canvas', { bg: '#030512', fontSize: 10 }),
+
+      life: rt.pipeline()
+        .source('cellular-automaton', { w: 96, h: 96, rule: 'life', stepsPerFrame: 1 })
+        .sampling('radial', { rings: 18, spokes: 48 })
+        .selection('brightness', { ramp: '.*#@' })
+        .color('gradient-stops', { stops: [[0, '#3b2a89'], [0.4, '#e91e8c'], [1, '#fff5c7']] })
+        .output('topology-aware-canvas', { bg: '#06001A', fontSize: 8 }),
+
+      feedback: rt.pipeline()
+        .source('feedback', { w: 128, h: 128, decay: 0.98,
+          inject: function (f, ctx) {
+            /* Gently re-seed a drifting point so the loop stays alive. */
+            const t = ctx.t;
+            const cx = (f.w / 2) + Math.cos(t * 1.3) * (f.w * 0.3);
+            const cy = (f.h / 2) + Math.sin(t * 1.7) * (f.h * 0.3);
+            const r = 6;
+            for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) {
+              if (x*x + y*y > r*r) continue;
+              const px = (cx + x) | 0, py = (cy + y) | 0;
+              if (px < 0 || px >= f.w || py < 0 || py >= f.h) continue;
+              f.buf[py * f.w + px] = 1.0;
+            }
+          }
+        })
+        .sampling('phyllotaxis', { count: 900 })
+        .selection('brightness', { ramp: '.:+*#@', gamma: 0.7 })
+        .color('ramp-palette', { palette: 'duneCinema', gamma: 0.5 })
+        .output('topology-aware-canvas', { bg: '#0A0604', fontSize: 7 }),
+
+      voronoi: rt.pipeline()
+        .source('flow-field', { w: W, h: H, particles: 1200, steps: 40, tDrift: 0.08 })
+        .sampling('voronoi', { sites: 80, stride: 3 })
+        .selection('brightness', { ramp: '.:-=+*#@', gamma: 0.5 })
+        .color('ramp-palette', { palette: 'synthwave' })
+        .output('topology-aware-canvas', { bg: '#10002a', fontSize: 14 }),
+
+      logpolar: rt.pipeline()
+        .source('flow-field', { w: W, h: H, particles: 1800, steps: 60, tDrift: 0.18, scale: 1/100 })
+        .sampling('log-polar', { rings: 30, spokes: 72, minRadius: 0.02, maxRadius: 0.48 })
+        .selection('dither-brightness', { ramp: '.:-=+*#%@' })
+        .color('ramp-palette', { palette: 'amber' })
+        .output('topology-aware-canvas', { bg: '#0A0604', fontSize: 7 }),
+    };
+  }
+
+  /* Drive the render loop. */
+  let pipelines = null;
+  let frameIdx = 0;
+  const FPS = 30;
+
+  function start() {
+    if (!window.GlyphGrid || !window.GlyphGrid.runtime) {
+      console.error('runtime not available'); return;
+    }
+    window.GlyphGrid.runtime.initPool(320, 320, 80, 80);
+    pipelines = buildPipelines();
+    for (const k of Object.keys(pipelines)) {
+      const issues = window.GlyphGrid.runtime.lint(pipelines[k]);
+      if (issues.length) console.log('lint', k, issues);
+    }
+    console.log('[showcase] pipelines ready:', Object.keys(pipelines));
+    loop();
+  }
+
+  async function loop() {
+    const rt = window.GlyphGrid.runtime;
+    const t = (frameIdx / FPS);
+    for (const k of Object.keys(pipelines)) {
+      const canvas = document.getElementById('canvas-' + k);
+      const ctx = rt.makeContext({
+        t: t, frameIdx: frameIdx, seed: 1337 + k.length,
+        config: { canvas: { w: canvas.width, h: canvas.height }, grid: { cols: 80, rows: 80 } },
+      });
+      ctx.canvas = canvas;
+      try {
+        await rt.run(pipelines[k], ctx);
+      } catch (e) {
+        console.error('[showcase]', k, e.message);
+      }
+    }
+    frameIdx += 1;
+    requestAnimationFrame(loop);
+  }
+
+  /* Kick off once libs are loaded. */
+  if (document.readyState === 'complete') setTimeout(start, 10);
+  else window.addEventListener('load', function () { setTimeout(start, 10); });
+  </script>
+
+</body>
+</html>

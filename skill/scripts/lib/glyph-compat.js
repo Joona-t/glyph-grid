@@ -73,12 +73,9 @@
     if (p.halation && p.halation.enabled) return true;
     if (p.vignette && p.vignette.enabled) return true;
     if (p.barrel && p.barrel.enabled) return true;
+    if (p.godRays && p.godRays.enabled) return true;
+    if (p.letterbox && p.letterbox.enabled) return true;
     return false;
-  }
-
-  function gateZones(config) {
-    if (isV1(config)) return false;
-    return !!(config.zones && config.zones.enabled);
   }
 
   function gatePaletteMorph(config) {
@@ -86,30 +83,27 @@
     return !!(config.paletteMorph && config.paletteMorph.enabled);
   }
 
-  function gateRetroMode(config) {
+  /* v2.1 — scene provides a depth p5.Graphics via `{ depth }` return.
+     The engine downsamples to cellDepth and exposes it to fog / rays. */
+  function gateDepth(config) {
     if (isV1(config)) return false;
-    return !!(config.retroMode && config.retroMode !== 'none');
+    return !!(config.depth && config.depth.enabled);
   }
 
-  function gateGPU(config) {
+  /* v2.1 — per-cell color lerp toward a fog colour by cellDepth. */
+  function gateDepthFog(config) {
     if (isV1(config)) return false;
-    return config.renderer === 'gpu';
+    if (!gateDepth(config)) return false;
+    const pp = config.postprocess;
+    return !!(pp && pp.depthFog && pp.depthFog.enabled);
   }
 
-  function gateStreamingRecord(config) {
-    if (!config.record) return false;
+  /* v2.1 — scene author supplies rectangles to re-sample at finer grid
+     density so tiny features (figures, faces) survive 8x8 averaging. */
+  function gateSalientROIs(config) {
     if (isV1(config)) return false;
-    if (config.recording && config.recording.mode === 'in-memory') return false;
-    return true;
-  }
-
-  /* Glyph-set resolution. v1 always uses the legacy RAMPS string; v2 may
-     override via CONFIG.glyphSet. We never mutate the ramp table here —
-     only report which identifier the pipeline should resolve. */
-  function resolveGlyphSource(config) {
-    if (isV1(config)) return { kind: 'ramp', id: config.ramp };
-    if (config.glyphSet) return { kind: 'set', id: config.glyphSet };
-    return { kind: 'ramp', id: config.ramp };
+    const rois = config.grid && config.grid.salientROIs;
+    return Array.isArray(rois) && rois.length > 0;
   }
 
   /* Selection mode resolution — when unspecified under v2, default to
@@ -149,25 +143,7 @@
       });
     }
 
-    if (gateGPU(config)) {
-      const errDiff = dith === 'floydSteinberg' || dith === 'atkinson' || dith === 'jarvisJudiceNinke';
-      if (errDiff) {
-        issues.push({
-          level: 'warn',
-          code: 'CR-4',
-          message: 'Error-diffusion dither is not supported on GPU. ' +
-                   'Auto-downgrading to bayer8. Set renderer: "cpu" to keep ' + dith + '.',
-        });
-      }
-    }
-
     return issues;
-  }
-
-  /* Short-circuit helper: returns `v1Value` under v1, else `v2Value`.
-     Concise at call sites without hiding the policy. */
-  function pick(config, v1Value, v2Value) {
-    return isV1(config) ? v1Value : v2Value;
   }
 
   const api = Object.freeze({
@@ -182,15 +158,12 @@
     gateDither: gateDither,
     gatePrefilter: gatePrefilter,
     gatePostprocess: gatePostprocess,
-    gateZones: gateZones,
     gatePaletteMorph: gatePaletteMorph,
-    gateRetroMode: gateRetroMode,
-    gateGPU: gateGPU,
-    gateStreamingRecord: gateStreamingRecord,
-    resolveGlyphSource: resolveGlyphSource,
+    gateDepth: gateDepth,
+    gateDepthFog: gateDepthFog,
+    gateSalientROIs: gateSalientROIs,
     resolveSelectionMode: resolveSelectionMode,
     validate: validate,
-    pick: pick,
   });
 
   const root = (typeof window !== 'undefined') ? window

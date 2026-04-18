@@ -239,6 +239,89 @@
     return rgba;
   }
 
+  /* --- God rays (v2.1) --- */
+
+  /* Simple radial-blur accumulator.  Traces `steps` samples from each
+     pixel back toward `lightPos` (normalized), accumulates linear
+     luminance above `threshold`, and adds the result to the pixel.
+     O(W*H*steps); ~20M ops at 800x800x32 — fine for record mode. */
+  function applyGodRays(rgba, w, h, opts) {
+    const steps = Math.max(4, Math.min(96, opts.steps == null ? 32 : opts.steps));
+    const strength = opts.strength == null ? 0.35 : opts.strength;
+    const threshold = opts.threshold == null ? 0.6 : opts.threshold;
+    const decay = opts.decay == null ? 0.96 : opts.decay;
+    const lightPos = opts.lightPos || [0.5, 0.05];
+    const lx = lightPos[0] * w;
+    const ly = lightPos[1] * h;
+    const tintHex = opts.color || null;
+    let tintR = 1, tintG = 1, tintB = 1;
+    if (tintHex && typeof tintHex === 'string') {
+      const m = tintHex.match(/#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/);
+      if (m) {
+        tintR = parseInt(m[1], 16) / 255;
+        tintG = parseInt(m[2], 16) / 255;
+        tintB = parseInt(m[3], 16) / 255;
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let accum = 0, weight = 1;
+        const dx = (lx - x) / steps;
+        const dy = (ly - y) / steps;
+        for (let s = 1; s <= steps; s++) {
+          const sx = (x + dx * s) | 0;
+          const sy = (y + dy * s) | 0;
+          if (sx < 0 || sx >= w || sy < 0 || sy >= h) break;
+          const si = (sy * w + sx) * 4;
+          const lr = srgbToLinear(rgba[si]);
+          const lg = srgbToLinear(rgba[si + 1]);
+          const lb = srgbToLinear(rgba[si + 2]);
+          const lum = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+          if (lum > threshold) accum += (lum - threshold) * weight;
+          weight *= decay;
+        }
+        if (accum <= 0) continue;
+        const add = (accum / steps) * strength;
+        const i = (y * w + x) * 4;
+        const dr = srgbToLinear(rgba[i])     + add * tintR;
+        const dg = srgbToLinear(rgba[i + 1]) + add * tintG;
+        const db = srgbToLinear(rgba[i + 2]) + add * tintB;
+        rgba[i]     = linearToSrgb(dr);
+        rgba[i + 1] = linearToSrgb(dg);
+        rgba[i + 2] = linearToSrgb(db);
+      }
+    }
+  }
+
+  /* --- Letterbox (v2.1) --- */
+
+  /* Fill top and bottom bars with the letterbox colour.  Always runs
+     last — any other post-process stage that depends on full canvas
+     content already finished. */
+  function applyLetterbox(rgba, w, h, opts) {
+    const topPx = Math.max(0, Math.floor(opts.topPx || 0));
+    const botPx = Math.max(0, Math.floor(opts.bottomPx || 0));
+    const hex = opts.color || '#000000';
+    const m = hex.match(/#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/);
+    const r = m ? parseInt(m[1], 16) : 0;
+    const g = m ? parseInt(m[2], 16) : 0;
+    const b = m ? parseInt(m[3], 16) : 0;
+    for (let y = 0; y < Math.min(topPx, h); y++) {
+      const base = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        const i = base + x * 4;
+        rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = 255;
+      }
+    }
+    for (let y = Math.max(0, h - botPx); y < h; y++) {
+      const base = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        const i = base + x * 4;
+        rgba[i] = r; rgba[i + 1] = g; rgba[i + 2] = b; rgba[i + 3] = 255;
+      }
+    }
+  }
+
   /* --- Apply chain --- */
 
   function applyChain(imgData, state, postOpts, runtime) {
@@ -249,6 +332,9 @@
     const reduced = !!runtime.prefersReducedMotion;
 
     if (postOpts.phosphorDecay && postOpts.phosphorDecay.enabled && !reduced) {
+      /* Lazy init: state may be null if phosphorDecay was enabled after setup().
+         This was a crash (Cannot read 'phosphorInit' of null) pre-Wave-0. */
+      if (!state) state = makeState(w, h);
       applyPhosphorDecay(d, state, postOpts.phosphorDecay);
     }
     if (postOpts.halation && postOpts.halation.enabled) {
@@ -256,6 +342,9 @@
     }
     if (postOpts.bloom && postOpts.bloom.enabled) {
       applyBloom(d, w, h, postOpts.bloom);
+    }
+    if (postOpts.godRays && postOpts.godRays.enabled) {
+      applyGodRays(d, w, h, postOpts.godRays);
     }
     if (postOpts.scanlines && postOpts.scanlines.enabled) {
       const phase = reduced ? 0 : (postOpts.scanlines.phase || 0);
@@ -269,6 +358,9 @@
     }
     if (postOpts.vignette && postOpts.vignette.enabled) {
       applyVignette(d, w, h, postOpts.vignette);
+    }
+    if (postOpts.letterbox && postOpts.letterbox.enabled) {
+      applyLetterbox(d, w, h, postOpts.letterbox);
     }
     return imgData;
   }
@@ -290,6 +382,8 @@
     applyChromaticAberration: applyChromaticAberration,
     applyBarrel: applyBarrel,
     applyVignette: applyVignette,
+    applyGodRays: applyGodRays,
+    applyLetterbox: applyLetterbox,
     applyChain: applyChain,
     prerollFrames: prerollFrames,
     boxBlurLinear: boxBlurLinear,

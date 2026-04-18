@@ -1,0 +1,270 @@
+[
+  {
+    "name": "00-baseline-v2-default",
+    "pass": true,
+    "bytes": 23868,
+    "sha": "ea415bc29449bc82",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1368
+  },
+  {
+    "name": "01-baseline-v1-compat",
+    "pass": true,
+    "bytes": 23868,
+    "sha": "ea415bc29449bc82",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1182
+  },
+  {
+    "name": "CONTRACT-v2-default-eq-v1",
+    "pass": true,
+    "v2sha": "ea415bc29449bc82",
+    "v1sha": "ea415bc29449bc82"
+  },
+  {
+    "name": "20-prefilter-xdog",
+    "pass": true,
+    "bytes": 38219,
+    "sha": "fc1f973aaa2af4d7",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 2984
+  },
+  {
+    "name": "21-dither-bayer8",
+    "pass": true,
+    "bytes": 16762,
+    "sha": "e95719ed9bbf5b81",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1190
+  },
+  {
+    "name": "22-dither-floyd",
+    "pass": true,
+    "bytes": 16337,
+    "sha": "ab6146d4c64867de",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1245
+  },
+  {
+    "name": "23-sel-shape",
+    "pass": true,
+    "bytes": 18788,
+    "sha": "d07e29521f068a45",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1292
+  },
+  {
+    "name": "24-sel-shape-edge",
+    "pass": true,
+    "bytes": 18788,
+    "sha": "d07e29521f068a45",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1208
+  },
+  {
+    "name": "30-post-crt-full",
+    "pass": true,
+    "bytes": 62016,
+    "sha": "0851f2b3d0467773",
+    "errors": [],
+    "warns": 3,
+    "assertions": null,
+    "caught": null,
+    "durMs": 2454
+  },
+  {
+    "name": "31-post-vignette-only",
+    "pass": true,
+    "bytes": 58194,
+    "sha": "2c876d86644fbc83",
+    "errors": [],
+    "warns": 3,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1191
+  },
+  {
+    "name": "32-post-halation",
+    "pass": true,
+    "bytes": 38371,
+    "sha": "495da278d651c2f6",
+    "errors": [],
+    "warns": 3,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1708
+  },
+  {
+    "name": "40-palette-morph",
+    "pass": true,
+    "bytes": 18788,
+    "sha": "d07e29521f068a45",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1189
+  },
+  {
+    "name": "60-compat-v1-ignores-crt",
+    "pass": true,
+    "bytes": 23868,
+    "sha": "ea415bc29449bc82",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1191
+  },
+  {
+    "name": "CONTRACT-v1-ignores-crt",
+    "pass": true
+  },
+  {
+    "name": "70-determinism-run1",
+    "pass": true,
+    "bytes": 38219,
+    "sha": "fc1f973aaa2af4d7",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 3005
+  },
+  {
+    "name": "71-determinism-run2",
+    "pass": true,
+    "bytes": 38219,
+    "sha": "fc1f973aaa2af4d7",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 3022
+  },
+  {
+    "name": "CONTRACT-determinism",
+    "pass": true
+  },
+  {
+    "name": "80-ec4-deep-clone",
+    "pass": true,
+    "bytes": 23868,
+    "sha": "ea415bc29449bc82",
+    "errors": [],
+    "warns": 2,
+    "assertions": {
+      "ok": true,
+      "shallowIntact": true,
+      "deepIntact": true
+    },
+    "caught": null,
+    "durMs": 1205
+  },
+  {
+    "name": "81-legacy-beginrecord",
+    "pass": true,
+    "bytes": 25380,
+    "sha": "37f56192fd37f116",
+    "errors": [],
+    "warns": 2,
+    "assertions": {
+      "ok": true,
+      "sawState": true,
+      "total": 1
+    },
+    "caught": null,
+    "durMs": 1200
+  },
+  {
+    "name": "82-skill-version",
+    "pass": true,
+    "bytes": 23868,
+    "sha": "ea415bc29449bc82",
+    "errors": [],
+    "warns": 2,
+    "assertions": {
+      "ok": true,
+      "version": "2.0.0"
+    },
+    "caught": null,
+    "durMs": 1185
+  },
+  {
+    "name": "83-validator-cr6",
+    "pass": true,
+    "bytes": 18788,
+    "sha": "d07e29521f068a45",
+    "errors": [],
+    "warns": 2,
+    "assertions": {
+      "ok": true,
+      "issues": [
+        {
+          "level": "warn",
+          "code": "CR-6",
+          "message": "Dithering applies only when selectionMode is \"brightness\". Under \"shape\" mode, dither is ignored. Use dither.mode \"source-prefilter\" to apply dither before shape encoding."
+        }
+      ]
+    },
+    "caught": null,
+    "durMs": 1182
+  },
+  {
+    "name": "84-validator-cr7",
+    "pass": true,
+    "bytes": 38219,
+    "sha": "fc1f973aaa2af4d7",
+    "errors": [],
+    "warns": 2,
+    "assertions": {
+      "ok": true,
+      "issues": [
+        {
+          "level": "warn",
+          "code": "CR-6",
+          "message": "Dithering applies only when selectionMode is \"brightness\". Under \"shape\" mode, dither is ignored. Use dither.mode \"source-prefilter\" to apply dither before shape encoding."
+        },
+        {
+          "level": "warn",
+          "code": "CR-7",
+          "message": "XDoG output is near-binary; shape-vector selection degenerates. Recommend selectionMode: \"shape-edge-aware\" when prefilter is XDoG."
+        }
+      ]
+    },
+    "caught": null,
+    "durMs": 3001
+  },
+  {
+    "name": "85-glyphset-cascade-missing",
+    "pass": true,
+    "bytes": 18788,
+    "sha": "d07e29521f068a45",
+    "errors": [],
+    "warns": 2,
+    "assertions": null,
+    "caught": null,
+    "durMs": 1200
+  }
+]
