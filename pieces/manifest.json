@@ -32,6 +32,20 @@
       "viewport": { "w": 1200, "h": 500 },
       "testFrames": [30, 60],
       "threshold": 5.0
+    },
+    {
+      "id": "zenyatta-meditation",
+      "path": "pieces/zenyatta-meditation",
+      "entry": "index.html",
+      "title": "Zenyatta · Meditation",
+      "description": "Robotic Buddhist monk in lotus pose with six orbs orbiting a halo. Charcoal-method XDoG ink edges plus celestial bloom + vignette. Pure parametric geometry; no source image.",
+      "scenes": ["zenyattaMeditation"],
+      "defaultScene": "zenyattaMeditation",
+      "fps": 30,
+      "totalFrames": 180,
+      "viewport": { "w": 800, "h": 800 },
+      "testFrames": [30, 90, 150],
+      "threshold": 5.0
     }
   ]
 }
